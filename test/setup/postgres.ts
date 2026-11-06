@@ -140,9 +140,36 @@ export async function migrate(
  * mirroring Amazon RDS (where the master user is not a superuser). A superuser would
  * silently bypass Row-Level Security and hide isolation bugs.
  */
-export async function startPostgres(): Promise<TestPostgres> {
+export interface StartPostgresOptions {
+  /**
+   * Log every statement (and the statement behind every error) to SERVER_LOG inside the
+   * container, so tests can assert what SQL text the server saw. Off by default: e2e
+   * suites would otherwise produce very large logs.
+   */
+  logStatements?: boolean;
+}
+
+/** Server log file inside the container when `logStatements` is on. */
+export const SERVER_LOG = '/tmp/pglog/postgresql.log';
+
+export async function startPostgres(opts: StartPostgresOptions = {}): Promise<TestPostgres> {
   const network = await new Network().start();
+  const logging = opts.logStatements
+    ? [
+        '-c',
+        'logging_collector=on',
+        '-c',
+        `log_directory=${path.posix.dirname(SERVER_LOG)}`,
+        '-c',
+        `log_filename=${path.posix.basename(SERVER_LOG)}`,
+        '-c',
+        'log_statement=all',
+        '-c',
+        'log_min_error_statement=error',
+      ]
+    : [];
   const container = await new PostgreSqlContainer('postgres:16-alpine')
+    .withCommand(['postgres', ...logging])
     .withNetwork(network)
     .withNetworkAliases(PG_ALIAS)
     .withDatabase('postgres')
@@ -195,6 +222,12 @@ export async function startPostgres(): Promise<TestPostgres> {
  * own Postgres) in multi-cell journeys. The runtime roles are cluster-wide and shared.
  */
 export async function createMigratedDatabase(pgc: TestPostgres, name: string): Promise<void> {
+  await createDatabase(pgc, name);
+  await migrate(pgc, { database: name });
+}
+
+/** Creates an EMPTY database owned by the non-superuser owner (public schema included). */
+export async function createDatabase(pgc: TestPostgres, name: string): Promise<void> {
   if (!/^[a-z_][a-z0-9_]{0,62}$/.test(name)) throw new Error(`Invalid database name ${name}`);
   const admin = new pg.Client({ connectionString: pgc.container.getConnectionUri() });
   await admin.connect();
@@ -216,7 +249,6 @@ export async function createMigratedDatabase(pgc: TestPostgres, name: string): P
   } finally {
     await asSuperOnDb.end();
   }
-  await migrate(pgc, { database: name });
 }
 
 export function clientFor(pgc: TestPostgres, role: 'app' | 'worker' | 'owner'): pg.Client {

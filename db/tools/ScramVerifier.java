@@ -13,15 +13,28 @@ import javax.crypto.spec.SecretKeySpec;
  * {@code SCRAM-SHA-256$<iterations>:<salt>$<StoredKey>:<ServerKey>} format).
  *
  * <p>Used by db/docker-entrypoint.sh so that CREATE/ALTER ROLE receives a verifier, never the
- * plaintext password: the password is read from the environment (never argv) and the SQL
- * Flyway sends, and anything Postgres or Flyway logs about it, carries only the verifier.
+ * plaintext password. The password is read from the environment (never argv); the verifier is
+ * handed to the migration session out of band (see db/callbacks/beforeMigrate.sql).
+ *
+ * <p>Iterations: 100,000 instead of PostgreSQL's default 4096, i.e. a leaked verifier costs
+ * about 24x more to attack offline. In SCRAM the SERVER never runs PBKDF2 at login (it stores
+ * StoredKey/ServerKey and checks an HMAC proof); the CLIENT derives the salted password once
+ * per new connection: about 8 ms per connection at 100,000 (measured in Node: 4096 = 0.5 ms,
+ * 100,000 = 7.9 ms, 600,000 = 47 ms). The API and worker hold pooled connections, so this is
+ * paid at pool fill, not per request.
+ *
+ * <p>Why not OWASP's 600,000: node-postgres (the API and worker driver) refuses servers that
+ * demand more than its {@code scramMaxIterations} guard, 100,000 by default, which protects
+ * clients from a hostile server burning their CPU. Going higher would mean raising that guard
+ * in every client. The runtime passwords are long random secrets (Secrets Manager), so the
+ * iteration count is defence in depth, not the main protection.
  *
  * <p>Passwords must be printable ASCII. PostgreSQL applies SASLprep (RFC 4013) before hashing;
  * for printable ASCII that is the identity, so this verifier matches what the server derives
  * at login. Anything else is refused rather than risking a verifier no login can match.
  */
 public final class ScramVerifier {
-  private static final int ITERATIONS = 4096;
+  private static final int ITERATIONS = 100_000;
   private static final int SALT_BYTES = 16;
   private static final int KEY_BITS = 256;
 

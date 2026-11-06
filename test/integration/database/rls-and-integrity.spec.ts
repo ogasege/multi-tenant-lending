@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, cp, mkdtemp, rm } from 'node:fs/promises';
+import { appendFile, cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -7,9 +7,11 @@ import pg from 'pg';
 
 import {
   clientFor,
+  createDatabase,
   DB_DIR,
   migrate,
   runFlyway,
+  SERVER_LOG,
   startPostgres,
   TEST_DB,
   type TestPostgres,
@@ -294,8 +296,20 @@ describe('migrations (Flyway)', () => {
   let pgc: TestPostgres;
 
   beforeAll(async () => {
-    pgc = await startPostgres();
+    // Statement logging on: the last test asserts no SQL text the server saw (or logged
+    // for an error) contains a password verifier.
+    pgc = await startPostgres({ logStatements: true });
   }, 240_000);
+
+  async function asSuperuser<T>(fn: (su: pg.Client) => Promise<T>): Promise<T> {
+    const su = new pg.Client({ connectionString: pgc.container.getConnectionUri() });
+    await su.connect();
+    try {
+      return await fn(su);
+    } finally {
+      await su.end();
+    }
+  }
 
   afterAll(async () => {
     await pgc.stop();
@@ -306,7 +320,8 @@ describe('migrations (Flyway)', () => {
     await owner.connect();
     try {
       const { rows } = await owner.query<{ version: string }>(
-        'SELECT version FROM flyway_schema_history WHERE success ORDER BY installed_rank',
+        `SELECT version FROM flyway_history.flyway_schema_history
+          WHERE success AND version IS NOT NULL ORDER BY installed_rank`,
       );
       return rows.map((r) => r.version);
     } finally {
@@ -320,9 +335,9 @@ describe('migrations (Flyway)', () => {
       const client = clientFor(pgc, role);
       await client.connect();
       try {
-        await expect(client.query('SELECT * FROM flyway_schema_history')).rejects.toThrow(
-          /permission denied/,
-        );
+        await expect(
+          client.query('SELECT * FROM flyway_history.flyway_schema_history'),
+        ).rejects.toThrow(/permission denied/);
       } finally {
         await client.end();
       }
@@ -382,7 +397,7 @@ describe('migrations (Flyway)', () => {
       expect(rows.map((r) => r.rolname)).toEqual(['lending_app', 'lending_worker']);
       for (const { rolpassword } of rows) {
         expect(rolpassword).toMatch(
-          /^SCRAM-SHA-256\$4096:[A-Za-z0-9+/]+=*\$[A-Za-z0-9+/]+=*:[A-Za-z0-9+/]+=*$/,
+          /^SCRAM-SHA-256\$100000:[A-Za-z0-9+/]+=*\$[A-Za-z0-9+/]+=*:[A-Za-z0-9+/]+=*$/,
         );
       }
     } finally {
@@ -412,14 +427,14 @@ describe('migrations (Flyway)', () => {
   }, 180_000);
 
   it('refuses a plaintext password handed straight to Flyway', async () => {
-    // Bypasses the entrypoint's hashing by overriding the placeholder Flyway reads.
+    // Bypasses the entrypoint's hashing by handing Flyway's session a plaintext value.
     const result = await runFlyway(pgc, {
       env: {
         FLYWAY_URL: `jdbc:postgresql://postgres:5432/${TEST_DB.name}?sslmode=disable`,
         FLYWAY_USER: TEST_DB.owner,
         FLYWAY_PASSWORD: TEST_DB.ownerPassword,
-        FLYWAY_PLACEHOLDERS_APPPASSWORDSCRAM: 'plaintext-pw',
-        FLYWAY_PLACEHOLDERS_WORKERPASSWORDSCRAM: 'plaintext-pw',
+        FLYWAY_JDBC_PROPERTIES_options:
+          '-c bootstrap.app_scram=plaintext-pw -c bootstrap.worker_scram=plaintext-pw',
       },
       entrypoint: ['flyway', '-configFiles=db/flyway.toml'],
     });
@@ -484,5 +499,90 @@ describe('migrations (Flyway)', () => {
     expect(result.ok).toBe(false);
     expect(result.logs).toMatch(/cleanDisabled/);
     expect((await appliedVersions()).length).toBeGreaterThan(0);
+  }, 180_000);
+
+  it('leaves migration history unreachable for the runtime roles when a migration fails', async () => {
+    // A fresh database where V1..V4 commit (V1 grants DML on ALL TABLES IN SCHEMA public)
+    // and V5 then fails, so afterMigrate never runs.
+    const database = 'lending_failed_run';
+    await createDatabase(pgc, database);
+    const broken = await mkdtemp(path.join(tmpdir(), 'lending-db-'));
+    try {
+      await cp(DB_DIR, broken, { recursive: true });
+      await writeFile(path.join(broken, 'migrations', 'V5__fails.sql'), 'SELECT 1/0;\n');
+      const result = await runFlyway(pgc, { dbDir: broken, database });
+      expect(result.ok).toBe(false);
+      expect(result.logs).toMatch(/version "5 - fails" failed/);
+      expect(result.logs).toMatch(/Executing SQL callback: afterMigrateError/);
+    } finally {
+      await rm(broken, { recursive: true, force: true });
+    }
+
+    for (const [user, password] of [
+      ['lending_app', TEST_DB.appPassword],
+      ['lending_worker', TEST_DB.workerPassword],
+    ] as const) {
+      const client = new pg.Client({ host: pgc.host, port: pgc.port, database, user, password });
+      await client.connect();
+      try {
+        const { rows } = await client.query<{ usage: boolean }>(
+          "SELECT has_schema_privilege('flyway_history', 'USAGE') AS usage",
+        );
+        expect(rows).toEqual([{ usage: false }]);
+        await expect(
+          client.query('UPDATE flyway_history.flyway_schema_history SET success = true'),
+        ).rejects.toThrow(/permission denied/);
+      } finally {
+        await client.end();
+      }
+    }
+    // The scenario is real: V1..V4 committed (with V1's broad grant) and V5 did not.
+    const owner = new pg.Client({
+      host: pgc.host,
+      port: pgc.port,
+      database,
+      user: TEST_DB.owner,
+      password: TEST_DB.ownerPassword,
+    });
+    await owner.connect();
+    try {
+      const { rows } = await owner.query<{ version: string }>(
+        `SELECT version FROM flyway_history.flyway_schema_history
+          WHERE success AND version IS NOT NULL ORDER BY installed_rank`,
+      );
+      expect(rows.map((r) => r.version)).toEqual(['1', '2', '3', '4']);
+      const grant = await owner.query<{ granted: boolean }>(
+        "SELECT has_table_privilege('lending_app', 'public.loans', 'INSERT') AS granted",
+      );
+      expect(grant.rows).toEqual([{ granted: true }]);
+    } finally {
+      await owner.end();
+    }
+  }, 180_000);
+
+  // Runs last: it inspects the server log of everything this suite sent.
+  it('never puts a password verifier into SQL text, even when the role bootstrap fails', async () => {
+    // Force CREATE/ALTER ROLE to fail: without CREATEROLE the owner cannot rotate passwords.
+    await asSuperuser((su) => su.query(`ALTER ROLE ${TEST_DB.owner} NOCREATEROLE`));
+    try {
+      const result = await runFlyway(pgc);
+      expect(result.ok).toBe(false);
+      expect(result.logs).toMatch(
+        /creating\/rotating role lending_app failed: permission denied to alter role/,
+      );
+      expect(result.logs).not.toMatch(/SCRAM-SHA-256\$/);
+    } finally {
+      await asSuperuser((su) => su.query(`ALTER ROLE ${TEST_DB.owner} CREATEROLE`));
+    }
+
+    const { output } = await pgc.container.exec(['cat', SERVER_LOG]);
+    // Logging really captured the bootstrap and its failure...
+    // pgjdbc uses the extended protocol: statements are logged as `execute <name>:`.
+    expect(output).toMatch(/(statement|execute [^:]*): -- Flyway `beforeMigrate` callback/);
+    expect(output).toMatch(/ERROR: {2}creating\/rotating role lending_app failed/);
+    // ...and no statement, error or CONTEXT line carries a verifier.
+    expect(output).not.toMatch(/SCRAM-SHA-256\$/);
+    // (The harness's own CREATE ROLE for the owner is logged; the runtime roles' never are.)
+    expect(output).not.toMatch(/ROLE "?lending_(app|worker)"? PASSWORD/i);
   }, 180_000);
 });

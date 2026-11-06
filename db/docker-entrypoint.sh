@@ -5,8 +5,8 @@
 # so compose, ECS and the tests pass the same DATABASE_* variables they always have:
 #   DATABASE_HOST, DATABASE_PORT, DATABASE_NAME, DATABASE_SSL  -> FLYWAY_URL
 #   DATABASE_MIGRATOR_USER / DATABASE_MIGRATOR_PASSWORD        -> FLYWAY_USER / FLYWAY_PASSWORD
-#   DATABASE_APP_PASSWORD / DATABASE_WORKER_PASSWORD           -> SCRAM-SHA-256 verifiers
-#                                                                 in FLYWAY_PLACEHOLDERS_*
+#   DATABASE_APP_PASSWORD / DATABASE_WORKER_PASSWORD           -> SCRAM-SHA-256 verifiers,
+#                                                                 sent as JDBC session options
 # Secrets travel only in the environment, never in argv, and the runtime roles' plaintext
 # passwords never reach Flyway or PostgreSQL (see db/callbacks/beforeMigrate.sql).
 # Arguments are passed to Flyway (default: `migrate`).
@@ -47,8 +47,12 @@ fi
 export FLYWAY_URL="jdbc:postgresql://${DATABASE_HOST}:${DATABASE_PORT:-5432}/${DATABASE_NAME}?${ssl}"
 export FLYWAY_USER="$DATABASE_MIGRATOR_USER"
 export FLYWAY_PASSWORD="$DATABASE_MIGRATOR_PASSWORD"
-export FLYWAY_PLACEHOLDERS_APPPASSWORDSCRAM="$app_scram"
-export FLYWAY_PLACEHOLDERS_WORKERPASSWORDSCRAM="$worker_scram"
+# The verifiers reach the migration session out of band: as session settings in the
+# connection's startup packet (pgjdbc `options` property, Flyway jdbcProperties), read by
+# db/callbacks/beforeMigrate.sql with current_setting(). They are never part of any SQL
+# text, so a failing statement cannot log them, and unlike URL parameters Flyway does not
+# print JDBC properties. Verifiers contain no whitespace, so no escaping is needed.
+export FLYWAY_JDBC_PROPERTIES_options="-c bootstrap.app_scram=${app_scram} -c bootstrap.worker_scram=${worker_scram}"
 # Flyway does not need the plaintext: keep it out of the JVM's environment.
 unset DATABASE_APP_PASSWORD DATABASE_WORKER_PASSWORD verifiers
 # Flyway (Redgate) phones home by default; a migration task has no business doing so.

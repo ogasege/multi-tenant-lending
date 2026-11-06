@@ -2,20 +2,28 @@
 #
 # Paths are relative to the working directory, which must be the directory that CONTAINS
 # `db/` (the repo root locally; /flyway/project in the container, see db/Dockerfile and
-# db/docker-entrypoint.sh). Connection settings and the two role passwords are never
+# db/docker-entrypoint.sh). Connection settings and the role password verifiers are never
 # written here: docker-entrypoint.sh maps DATABASE_* onto FLYWAY_URL / FLYWAY_USER /
-# FLYWAY_PASSWORD / FLYWAY_PLACEHOLDERS_*.
+# FLYWAY_PASSWORD, and hands the verifiers over as JDBC connection options.
 
 [environments.default]
-# Flyway owns exactly one schema; its history table (flyway_schema_history) lives there.
-schemas = ["public"]
+# Migration history lives in its OWN schema, `flyway_history`, on which the runtime roles
+# (lending_app, lending_worker) have no USAGE. V1's `GRANT ... ON ALL TABLES IN SCHEMA
+# public` therefore can never reach it, even if a migration fails before the afterMigrate
+# REVOKE runs. The first schema listed holds the history table and is created by Flyway.
+# `public` is listed too so Flyway's non-empty-schema guard covers it (no silent adoption
+# of a database migrated by something else).
+schemas = ["flyway_history", "public"]
 # The database may still be starting (compose, a fresh RDS instance): retry, don't fail.
 connectRetries = 10
 connectRetriesInterval = 5
 
 [flyway]
 environment = "default"
-defaultSchema = "public"
+# Flyway puts the default schema FIRST on search_path while migrating; the beforeEachMigrate
+# callback resets search_path to `public` so unqualified objects in migrations land there.
+defaultSchema = "flyway_history"
+createSchemas = true
 locations = ["filesystem:db/migrations", "filesystem:db/callbacks"]
 # Typo'd or missing locations must fail, not silently apply nothing.
 failOnMissingLocations = true
@@ -33,8 +41,9 @@ baselineOnMigrate = false
 mixed = false
 group = false
 
-# Required by db/callbacks/beforeMigrate.sql (appPassword, workerPassword).
-placeholderReplacement = true
+# No placeholders anywhere: secrets reach SQL as session settings, never as substituted
+# text (see db/callbacks/beforeMigrate.sql), and `${...}` in SQL stays literal.
+placeholderReplacement = false
 
 # Do not echo result sets (e.g. `SELECT app_enable_tenant_rls(...)`) into the task log.
 outputQueryResults = false
