@@ -1,0 +1,355 @@
+# Local stack: the real container image against Postgres 16, Redis 7 and
+# LocalStack (S3 + SQS). Start with `make up`; see `make help`.
+#
+# Configuration comes from `.env` (copied from `.env.example`) through ${VAR}
+# interpolation. Each service is given ONLY the variables it needs, rather
+# than `env_file:` for everything, so the API never receives the migrator or
+# worker credentials (same least-privilege split as the ECS task definitions).
+# `${VAR:?}` makes compose refuse to start when a required value is missing.
+#
+# Start-up order: postgres/redis/localstack healthy -> migrate (Flyway)
+# exits 0 -> api (and worker) start.
+#
+# The worker (outbox relay, webhook dispatcher, directory reconciler, end of
+# day) runs from the same image with `dist/worker.js`; it serves no HTTP.
+#
+# Profile `two-cells` (`make demo-cells`) adds a second, EU cell: api-eu on
+# port 3001 with its own database (lending_eu, same Postgres container) and
+# Redis logical DB 1, sharing the LocalStack tenant directory table with the
+# Lagos cell, to demo cross-cell 307 redirects. Locally both cells share the
+# Postgres roles, S3 bucket and SQS queue; in AWS each cell has its own.
+
+name: tenmg-lending
+
+x-app-image: &app-image
+  image: tenmg-lending-core:local
+  build:
+    context: .
+    target: runtime
+
+# Hardening shared by every app container: read-only root filesystem,
+# no Linux capabilities, no privilege escalation. Mirrors the ECS task
+# definition (readonlyRootFilesystem, no added capabilities).
+x-app-hardening: &app-hardening
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  # tini as PID 1 reaps zombies and forwards signals; Node still gets
+  # SIGTERM and runs NestJS shutdown hooks (ECS: initProcessEnabled).
+  init: true
+
+x-db-env: &db-env
+  DATABASE_HOST: postgres
+  DATABASE_PORT: '5432'
+  DATABASE_NAME: ${DATABASE_NAME:?set in .env}
+  DATABASE_SSL: 'false'
+
+x-runtime-env: &runtime-env
+  <<: *db-env
+  # WHY not `production`: the cells redirect to each other's
+  # CELL_API_BASE_URL, and the env schema only accepts plain-http
+  # (http://localhost:300x) cell URLs outside production. `development`
+  # would load pino-pretty, a dev dependency absent from the runtime image.
+  # `test` keeps JSON logs and also exposes Swagger UI at /docs.
+  NODE_ENV: ${APP_NODE_ENV:-test}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  DATABASE_APP_USER: ${DATABASE_APP_USER:-lending_app}
+  DATABASE_APP_PASSWORD: ${DATABASE_APP_PASSWORD:?set in .env}
+  DATABASE_WORKER_USER: ${DATABASE_WORKER_USER:-lending_worker}
+  DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?set in .env}@redis:6379
+  JWT_SECRET: ${JWT_SECRET:?set in .env}
+  JWT_ISSUER: ${JWT_ISSUER:-tenmg-lending-local}
+  BVN_HMAC_KEY: ${BVN_HMAC_KEY:?set in .env}
+  DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?set in .env}
+  AWS_REGION: ${AWS_REGION:-af-south-1}
+  AWS_ENDPOINT_URL: http://localstack:4566
+  # Browser-facing presigned S3 URLs (logo GET, upload POST) are signed for
+  # this host instead: `localstack` only resolves inside the compose network.
+  S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-http://localhost:4566}
+  # LocalStack's conventional dummy credentials (not secrets).
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  SQS_DOMAIN_EVENTS_QUEUE_URL: ${SQS_DOMAIN_EVENTS_QUEUE_URL:?set in .env}
+  S3_BRANDING_BUCKET: ${S3_BRANDING_BUCKET:?set in .env}
+  CORS_ORIGINS: ${CORS_ORIGINS:-}
+  RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+  AUTH_RATE_LIMIT_PER_MINUTE: ${AUTH_RATE_LIMIT_PER_MINUTE:-20}
+  # Cell identity + global tenant directory (DynamoDB). Locally every cell
+  # shares ONE LocalStack region, so AWS_REGION stays the same for all cells
+  # (that is where the directory table lives); CELL_REGION is the cell's
+  # logical home region used for routing/redirects.
+  CELL_REGION: ${CELL_REGION:-af-south-1}
+  CELL_API_BASE_URL: ${CELL_API_BASE_URL:-http://localhost:3000}
+  # Trusted cells (region -> origin): 307 redirects are only ever issued to
+  # these origins. Identical for every cell; each entry for a cell's own
+  # region must equal its CELL_API_BASE_URL.
+  CELL_ORIGINS: ${CELL_ORIGINS:?set in .env}
+  DIRECTORY_TABLE_NAME: ${DIRECTORY_TABLE_NAME:?set in .env}
+
+x-app-depends: &app-depends
+  migrate:
+    condition: service_completed_successfully
+  redis:
+    condition: service_healthy
+  localstack:
+    condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set in .env}
+      POSTGRES_DB: postgres
+      # Consumed by docker/postgres/init.sql (non-superuser schema owner).
+      LENDING_DB_NAME: ${DATABASE_NAME:?set in .env}
+      # Second cell's database (profile two-cells); created up front so the
+      # profile can be enabled later without wiping the volume.
+      LENDING_EU_DB_NAME: ${EU_DATABASE_NAME:-lending_eu}
+      LENDING_OWNER_PASSWORD: ${DATABASE_MIGRATOR_PASSWORD:?set in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports:
+      # Loopback only: reachable from this machine, not the LAN.
+      - 127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432
+    healthcheck:
+      # Probe over TCP against the app database: during first-boot init the
+      # entrypoint's temporary server listens on the unix socket only, so a
+      # TCP probe cannot report healthy before init.sql has finished.
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U postgres -d "$${LENDING_DB_NAME}"']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
+    # AUTH on, like ElastiCache. No persistence: rate-limit and cache data are
+    # disposable, and a cold Redis on restart is the realistic failure mode.
+    command:
+      - sh
+      - -c
+      - exec redis-server --requirepass "$$REDIS_PASSWORD" --save '' --appendonly no
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set in .env}
+      # redis-cli reads this, so the password never appears in argv of the probe.
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?set in .env}
+    ports:
+      - 127.0.0.1:${REDIS_HOST_PORT:-6379}:6379
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  localstack:
+    # Pinned: the last tag that runs without an auth token (same as the
+    # Testcontainers setup in test/setup/global-setup.ts).
+    image: localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
+    environment:
+      # Only what the app uses; `make tf-local` widens this to the services
+      # the Terraform composition also manages (KMS, Secrets Manager).
+      SERVICES: ${LOCALSTACK_SERVICES:-s3,sqs,dynamodb,kms,secretsmanager,sts}
+      AWS_DEFAULT_REGION: ${AWS_REGION:-af-south-1}
+      # Queue URLs returned by the API use this host, reachable from the app
+      # containers on the compose network.
+      LOCALSTACK_HOST: localstack:4566
+      SQS_ENDPOINT_STRATEGY: 'off'
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
+      # false = leave resource creation to Terraform (`make tf-local`).
+      LOCALSTACK_INIT_RESOURCES: ${LOCALSTACK_INIT_RESOURCES:-true}
+    volumes:
+      - localstack-data:/var/lib/localstack
+      - ./docker/localstack/init/ready.d:/etc/localstack/init/ready.d:ro
+    ports:
+      - 127.0.0.1:${LOCALSTACK_HOST_PORT:-4566}:4566
+    healthcheck:
+      # Healthy only once the ready.d hooks have completed, i.e. the bucket
+      # and queues exist, not merely when the services are up.
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS http://127.0.0.1:4566/_localstack/init/ready
+          | grep -Eq '"completed": ?true'
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+
+  migrate: &migrate
+    # Flyway image with the SQL baked in (db/Dockerfile: flyway/flyway +
+    # db/flyway.toml + db/migrations + db/callbacks). The same image runs as
+    # the one-off migration task in ECS. Connects as the NON-superuser
+    # schema owner (DATABASE_MIGRATOR_*), as on RDS; the beforeMigrate
+    # callback creates/rotates the lending_app / lending_worker login roles.
+    # db/docker-entrypoint.sh maps these DATABASE_* variables (the SPEC §12
+    # contract) onto FLYWAY_URL / FLYWAY_USER / FLYWAY_PASSWORD /
+    # FLYWAY_PLACEHOLDERS_APPPASSWORD / FLYWAY_PLACEHOLDERS_WORKERPASSWORD.
+    image: tenmg-lending-migrations:local
+    build:
+      # db/ is a self-contained build context (db/.dockerignore).
+      context: ./db
+    command: ['migrate']
+    # Runs to completion once per `up`; api/worker wait for exit code 0.
+    restart: 'no'
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment: &migrate-env
+      <<: *db-env
+      DATABASE_MIGRATOR_USER: ${DATABASE_MIGRATOR_USER:-lending_owner}
+      DATABASE_MIGRATOR_PASSWORD: ${DATABASE_MIGRATOR_PASSWORD:?set in .env}
+      DATABASE_APP_PASSWORD: ${DATABASE_APP_PASSWORD:?set in .env}
+      DATABASE_WORKER_PASSWORD: ${DATABASE_WORKER_PASSWORD:?set in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: [*app-image, *app-hardening]
+    command: ['dist/main.js']
+    environment:
+      <<: *runtime-env
+      PORT: '3000'
+    ports:
+      - 127.0.0.1:${API_HOST_PORT:-3000}:3000
+    depends_on: *app-depends
+    restart: unless-stopped
+    # Matches the ECS stopTimeout: time to drain in-flight requests.
+    stop_grace_period: 30s
+    healthcheck:
+      # Distroless has no curl: use Node's built-in fetch.
+      test:
+        - CMD
+        - /nodejs/bin/node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:3000/health/ready')
+          .then((r) => process.exit(r.ok ? 0 : 1))
+          .catch(() => process.exit(1))
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  worker: &worker
+    <<: [*app-image, *app-hardening]
+    command: ['dist/worker.js']
+    environment:
+      <<: *runtime-env
+      # Only the worker receives the lending_worker credentials. Tuning
+      # variables (OUTBOX_*, WEBHOOK_*, EOD_*, ...) keep their schema defaults.
+      DATABASE_WORKER_PASSWORD: ${DATABASE_WORKER_PASSWORD:?set in .env}
+    depends_on: *app-depends
+    restart: unless-stopped
+    # The worker stops polling, then drains in-flight jobs (= ECS stopTimeout).
+    stop_grace_period: 60s
+    healthcheck: &worker-healthcheck
+      # No HTTP server and no ps in distroless: look for a live (non-zombie)
+      # `node dist/worker.js` in /proc. A crash also exits the container and
+      # `restart` brings it back; this probe makes the state visible to
+      # `docker compose ps` / `up --wait`.
+      test:
+        - CMD
+        - /nodejs/bin/node
+        - -e
+        - >-
+          const fs = require('node:fs');
+          const alive = fs.readdirSync('/proc').filter((p) => /^[0-9]+$$/.test(p))
+          .filter((p) => String(process.pid) !== p).some((p) => {
+          try {
+          const cmd = fs.readFileSync('/proc/' + p + '/cmdline', 'utf8');
+          const state = fs.readFileSync('/proc/' + p + '/stat', 'utf8').split(') ')[1][0];
+          return cmd.includes('dist/worker.js') && state !== 'Z';
+          } catch { return false; }
+          });
+          process.exit(alive ? 0 : 1);
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  # ---- profile two-cells: a second (EU) cell for the redirect demo --------
+  migrate-eu:
+    <<: *migrate
+    profiles: ['two-cells']
+    environment:
+      <<: *migrate-env
+      DATABASE_NAME: ${EU_DATABASE_NAME:-lending_eu}
+    # Serialised after the Lagos migration: locally both cells share the
+    # cluster-wide login roles, and two concurrent beforeMigrate callbacks
+    # rotating the same role fail with "tuple concurrently updated". (In AWS
+    # each cell has its own RDS instance, so this never arises there.)
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  api-eu:
+    <<: [*app-image, *app-hardening]
+    profiles: ['two-cells']
+    command: ['dist/main.js']
+    environment:
+      <<: *runtime-env
+      PORT: '3000'
+      DATABASE_NAME: ${EU_DATABASE_NAME:-lending_eu}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set in .env}@redis:6379/1
+      CELL_REGION: ${EU_CELL_REGION:-eu-west-3}
+      CELL_API_BASE_URL: ${EU_CELL_API_BASE_URL:-http://localhost:3001}
+    ports:
+      - 127.0.0.1:${EU_API_HOST_PORT:-3001}:3000
+    depends_on:
+      migrate-eu:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - /nodejs/bin/node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:3000/health/ready')
+          .then((r) => process.exit(r.ok ? 0 : 1))
+          .catch(() => process.exit(1))
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  worker-eu:
+    <<: *worker
+    profiles: ['two-cells']
+    environment:
+      <<: *runtime-env
+      DATABASE_WORKER_PASSWORD: ${DATABASE_WORKER_PASSWORD:?set in .env}
+      DATABASE_NAME: ${EU_DATABASE_NAME:-lending_eu}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set in .env}@redis:6379/1
+      CELL_REGION: ${EU_CELL_REGION:-eu-west-3}
+      CELL_API_BASE_URL: ${EU_CELL_API_BASE_URL:-http://localhost:3001}
+    depends_on:
+      migrate-eu:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  localstack-data:

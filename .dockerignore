@@ -1,0 +1,42 @@
+# Keep the build context small and free of secrets and local state.
+# Allow-list thinking: anything not needed to build or test the app stays out.
+
+# VCS, tooling and editor state
+.git
+.github
+.claude
+.remember
+.vscode
+.idea
+**/.DS_Store
+
+# Dependencies and build output are produced inside the image
+node_modules
+dist
+coverage
+.vitest
+*.tsbuildinfo
+
+# Secrets and local environment (never baked into an image)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets
+
+# Not part of the application image
+docs
+infra
+docker
+docker-compose*.yml
+compose*.yml
+Makefile
+Dockerfile
+.dockerignore
+objectives.png
+rules.png
+*.log
+.localstack
+volume

@@ -1,0 +1,192 @@
+# Application CI: quality gates, tests (unit / db / e2e on real containers),
+# dependency audit, Dockerfile lint and container image scan.
+# Infrastructure CI lives in infra.yml (owned separately).
+#
+# Supply chain: every action is pinned to a full commit SHA (tag in the
+# trailing comment; Dependabot keeps both in sync). Trivy is installed as a
+# pinned binary through aquasecurity/setup-trivy rather than
+# aquasecurity/trivy-action, whose tags were compromised in March 2026.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: read the repo, nothing else. No job needs more.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR runs are cancelled; runs on main always finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TRIVY_VERSION: v0.76.1
+  HADOLINT_IMAGE: hadolint/hadolint:v2.14.0@sha256:27086352fd5e1907ea2b934eb1023f217c5ae087992eb59fde121dce9c9ff21e
+
+jobs:
+  quality:
+    name: Lint, typecheck, format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run format:check
+      # The committed OpenAPI document must match the code (contract drift).
+      - run: npm run openapi:check
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test:unit
+
+  integration:
+    name: ${{ matrix.project }} tests (Testcontainers)
+    # GitHub-hosted Ubuntu runners ship a Docker daemon, so Testcontainers
+    # starts real Postgres / Redis / LocalStack exactly as on a laptop.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [db, e2e]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx vitest run --project "${{ matrix.project }}"
+
+  coverage:
+    name: Coverage gate (all projects)
+    # The thresholds in vitest.config.mts are defined over the whole suite,
+    # so the gate runs unit + db + e2e together.
+    needs: [unit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test:cov
+      - name: Upload coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 14
+          if-no-files-found: error
+
+  audit:
+    name: npm audit (production deps)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      # Only what ships in the image matters for runtime exposure; dev-only
+      # advisories are handled through Dependabot.
+      - run: npm audit --omit=dev --audit-level=high
+
+  hadolint:
+    name: Dockerfile lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The official image, pinned by digest, instead of a third-party action.
+      - name: hadolint
+        run: |
+          for f in Dockerfile db/Dockerfile; do
+            if [ -f "$f" ]; then
+              echo "::group::$f"
+              docker run --rm -i "$HADOLINT_IMAGE" hadolint --failure-threshold warning - < "$f"
+              echo "::endgroup::"
+            fi
+          done
+
+  image:
+    name: Build and scan images
+    needs: [hadolint]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build app image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: runtime
+          load: true
+          push: false
+          tags: tenmg-lending-core:ci
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,scope=app,mode=max
+      - name: Build migrations image
+        if: ${{ hashFiles('db/Dockerfile') != '' }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: db
+          load: true
+          push: false
+          tags: tenmg-lending-migrations:ci
+          cache-from: type=gha,scope=migrations
+          cache-to: type=gha,scope=migrations,mode=max
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          cache: true
+      - name: Trivy scan (fail on HIGH/CRITICAL)
+        run: |
+          images=(tenmg-lending-core:ci)
+          if docker image inspect tenmg-lending-migrations:ci >/dev/null 2>&1; then
+            images+=(tenmg-lending-migrations:ci)
+          fi
+          for image in "${images[@]}"; do
+            echo "::group::$image"
+            # --ignore-unfixed: fail only on findings a base/dependency bump
+            # can actually fix; unfixed CVEs are tracked, not blocking.
+            trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed \
+              --scanners vuln --no-progress "$image"
+            echo "::endgroup::"
+          done
