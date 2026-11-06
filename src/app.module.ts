@@ -4,6 +4,8 @@ import { AwsModule } from './common/aws/aws.module';
 import { CommonModule } from './common/common.module';
 import { DirectoryModule } from './modules/directory/directory.module';
 import { HealthModule } from './modules/health/health.module';
+import { InstitutionsModule } from './modules/institutions/institutions.module';
+import { LoanProductsModule } from './modules/loan-products/loan-products.module';
 
 /**
  * HTTP API composition root. Feature modules are independent bounded contexts: none imports
@@ -16,6 +18,9 @@ import { HealthModule } from './modules/health/health.module';
     HealthModule,
     // Global control plane: tenant directory + cell routing (307 / 421)
     DirectoryModule,
+    // White-label configuration
+    InstitutionsModule,
+    LoanProductsModule,
   ],
 })
 export class AppModule {}
