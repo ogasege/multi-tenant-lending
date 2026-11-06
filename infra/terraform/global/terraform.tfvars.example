@@ -1,0 +1,14 @@
+environment    = "prod"
+aws_account_id = "111111111111"
+aws_region     = "af-south-1"
+cell_regions   = ["af-south-1", "eu-west-3", "eu-west-2"]
+hosted_zone_id = "Z0000000000000000000"
+api_domain     = "api.example.com"
+
+# Fill after each cell's first apply (terraform output in environments/<env>):
+cells = {
+  "af-south-1" = {
+    alb_dns_name = "lending-prod-api-123456789.af-south-1.elb.amazonaws.com"
+    alb_zone_id  = "Z268VQBMOI5EKX"
+  }
+}

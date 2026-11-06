@@ -1,0 +1,454 @@
+data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
+
+data "aws_partition" "current" {}
+
+locals {
+  account_id = data.aws_caller_identity.current.account_id
+  region     = data.aws_region.current.region
+  partition  = data.aws_partition.current.partition
+
+  # One CMK per data domain rather than one key for everything. WHY:
+  # each key policy / IAM grant can then be scoped to exactly the
+  # workloads that touch that domain (the API can decrypt S3 objects but
+  # not SQS messages), and disabling one key during an incident does not
+  # take the whole platform down. Cost is $1/key/month + API calls.
+  kms_keys = {
+    rds         = "RDS storage, snapshots and Performance Insights"
+    elasticache = "ElastiCache (Valkey) data at rest"
+    secrets     = "Secrets Manager secrets (DB roles, Redis AUTH, app keys, RDS master)"
+    messaging   = "SQS queues and the SNS alarm topic"
+    s3          = "S3 tenant branding objects"
+    logs        = "CloudWatch Logs log groups (app, WAF, VPC flow, RDS, cache)"
+    ecr         = "ECR container images"
+  }
+}
+
+# ---------------------------------------------------------------------
+# KMS customer-managed keys
+# ---------------------------------------------------------------------
+
+data "aws_iam_policy_document" "kms" {
+  for_each = local.kms_keys
+
+  # Key policies always use Resource "*" (it means "this key"), so the
+  # generic IAM wildcard checks do not apply to them.
+  #checkov:skip=CKV_AWS_109:Key policy - "*" resource means this key only
+  #checkov:skip=CKV_AWS_111:Key policy - "*" resource means this key only
+  #checkov:skip=CKV_AWS_356:Key policy - "*" resource means this key only
+
+  # Root-account statement delegates key access to IAM policies. WHY:
+  # without it the key can become unmanageable (no principal can change
+  # the policy); with it, least privilege is enforced in IAM role
+  # policies, which name this key's ARN explicitly.
+  statement {
+    sid       = "EnableIamPolicies"
+    effect    = "Allow"
+    actions   = ["kms:*"]
+    resources = ["*"]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:${local.partition}:iam::${local.account_id}:root"]
+    }
+  }
+
+  # CloudWatch Logs encrypts log groups with the key itself (not via the
+  # caller's credentials), so it needs a service-principal grant scoped
+  # by encryption context to log groups in this account and region.
+  dynamic "statement" {
+    for_each = each.key == "logs" ? [1] : []
+
+    content {
+      sid    = "AllowCloudWatchLogs"
+      effect = "Allow"
+      actions = [
+        "kms:Encrypt*",
+        "kms:Decrypt*",
+        "kms:ReEncrypt*",
+        "kms:GenerateDataKey*",
+        "kms:Describe*",
+      ]
+      resources = ["*"]
+
+      principals {
+        type        = "Service"
+        identifiers = ["logs.${local.region}.amazonaws.com"]
+      }
+
+      condition {
+        test     = "ArnLike"
+        variable = "kms:EncryptionContext:aws:logs:arn"
+        values   = ["arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:*"]
+      }
+    }
+  }
+
+  # CloudWatch alarms publish to the KMS-encrypted SNS topic; the alarm
+  # service needs to generate data keys or the notification is dropped
+  # silently (the classic "alarm fired but nobody got paged" bug).
+  dynamic "statement" {
+    for_each = each.key == "messaging" ? [1] : []
+
+    content {
+      sid       = "AllowCloudWatchAlarmsToPublish"
+      effect    = "Allow"
+      actions   = ["kms:Decrypt", "kms:GenerateDataKey*"]
+      resources = ["*"]
+
+      principals {
+        type        = "Service"
+        identifiers = ["cloudwatch.amazonaws.com"]
+      }
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:SourceAccount"
+        values   = [local.account_id]
+      }
+    }
+  }
+}
+
+resource "aws_kms_key" "this" {
+  for_each = local.kms_keys
+
+  description             = "${var.name}: ${each.value}"
+  deletion_window_in_days = var.kms_deletion_window_in_days
+  # Annual automatic rotation: new key material for new encryptions,
+  # old material kept for decrypt, transparent to callers.
+  enable_key_rotation     = true
+  rotation_period_in_days = 365
+  # Single-region on purpose: multi-region keys would let ciphertext be
+  # decrypted outside the primary region, weakening data residency.
+  multi_region = false
+  policy       = data.aws_iam_policy_document.kms[each.key].json
+
+  tags = {
+    Name       = "${var.name}-${each.key}"
+    DataDomain = each.key
+  }
+}
+
+resource "aws_kms_alias" "this" {
+  for_each = local.kms_keys
+
+  name          = "alias/${var.name}-${each.key}"
+  target_key_id = aws_kms_key.this[each.key].key_id
+}
+
+# ---------------------------------------------------------------------
+# Application secrets (JWT_SECRET, BVN_HMAC_KEY, DATA_ENCRYPTION_KEY)
+# ---------------------------------------------------------------------
+
+# Generated by Terraform so no human ever sees or pastes them. Trade-off:
+# with Terraform 1.10 the values live in state (encrypted, access-
+# restricted bucket). Terraform >= 1.11 write-only arguments
+# (secret_string_wo + ephemeral random_password) would remove that.
+resource "random_password" "jwt_secret" {
+  length  = 64
+  special = false
+}
+
+resource "random_password" "bvn_hmac_key" {
+  length  = 64
+  special = false
+}
+
+# AES-256-GCM needs exactly 32 bytes of key material; exposed base64-
+# encoded. ASSUMPTION: the app decodes DATA_ENCRYPTION_KEY as base64.
+resource "random_bytes" "data_encryption_key" {
+  length = 32
+}
+
+resource "aws_secretsmanager_secret" "app" {
+  # Rotating these keys needs an app-level dual-key read window (old and
+  # new JWT secret / DEK both accepted), which is a product change, not
+  # an infra toggle. Tracked as a follow-up; see README.
+  #checkov:skip=CKV2_AWS_57:Rotation requires app dual-key support; planned
+
+  name                    = "${var.name}/app"
+  description             = "JWT_SECRET, BVN_HMAC_KEY and DATA_ENCRYPTION_KEY for ${var.name}"
+  kms_key_id              = aws_kms_key.this["secrets"].arn
+  recovery_window_in_days = var.secret_recovery_window_in_days
+}
+
+resource "aws_secretsmanager_secret_version" "app" {
+  secret_id = aws_secretsmanager_secret.app.id
+  secret_string = jsonencode({
+    jwt_secret          = random_password.jwt_secret.result
+    bvn_hmac_key        = random_password.bvn_hmac_key.result
+    data_encryption_key = random_bytes.data_encryption_key.base64
+  })
+}
+
+# ---------------------------------------------------------------------
+# WAFv2 web ACL (attached to the ALB by the alb module)
+# ---------------------------------------------------------------------
+
+resource "aws_wafv2_web_acl" "this" {
+  name        = "${var.name}-api"
+  description = "Edge protection for the ${var.name} public API"
+  scope       = "REGIONAL"
+
+  default_action {
+    allow {}
+  }
+
+  # Platform-admin API only from the admin network (when configured).
+  # Runs first: a blocked admin path needs no further inspection. Tenant
+  # and customer routes are unaffected.
+  dynamic "rule" {
+    for_each = length(var.platform_admin_cidrs) > 0 ? [1] : []
+
+    content {
+      name     = "PlatformAdminFromAllowListOnly"
+      priority = 5
+
+      action {
+        block {}
+      }
+
+      statement {
+        and_statement {
+          statement {
+            byte_match_statement {
+              search_string         = "/v1/platform/"
+              positional_constraint = "STARTS_WITH"
+
+              field_to_match {
+                uri_path {}
+              }
+
+              text_transformation {
+                priority = 0
+                type     = "LOWERCASE"
+              }
+            }
+          }
+
+          statement {
+            not_statement {
+              statement {
+                ip_set_reference_statement {
+                  arn = aws_wafv2_ip_set.platform_admin[0].arn
+                }
+              }
+            }
+          }
+        }
+      }
+
+      visibility_config {
+        cloudwatch_metrics_enabled = true
+        metric_name                = "${var.name}-platform-allowlist"
+        sampled_requests_enabled   = true
+      }
+    }
+  }
+
+  # Managed rule groups first: cheap, AWS-maintained signatures. They run
+  # before the rate rules so obviously malicious traffic is dropped
+  # without consuming rate-limit budget of legitimate users behind NAT.
+  rule {
+    name     = "AWSManagedRulesAmazonIpReputationList"
+    priority = 10
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesAmazonIpReputationList"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name}-ip-reputation"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "AWSManagedRulesCommonRuleSet"
+    priority = 20
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name}-common"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Includes Log4Shell / Spring4Shell style payload signatures.
+  rule {
+    name     = "AWSManagedRulesKnownBadInputsRuleSet"
+    priority = 30
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesKnownBadInputsRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name}-known-bad-inputs"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Defence in depth on top of Kysely's parameterised queries.
+  rule {
+    name     = "AWSManagedRulesSQLiRuleSet"
+    priority = 40
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesSQLiRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name}-sqli"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Tight per-IP limit on the unauthenticated, expensive endpoints:
+  # tenant + platform login/refresh (credential stuffing) and customer
+  # self-registration (signup abuse, argon2 cost). The app also rate-
+  # limits via Redis; WAF stops the flood before it costs Fargate CPU.
+  rule {
+    name     = "RateLimitAuthPerIp"
+    priority = 50
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit                 = var.waf_auth_rate_limit_per_ip
+        aggregate_key_type    = "IP"
+        evaluation_window_sec = 300
+
+        scope_down_statement {
+          regex_match_statement {
+            regex_string = "^/v1/((platform/)?auth/|institutions/[^/]+/customers/register/?$)"
+
+            field_to_match {
+              uri_path {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name}-rate-auth"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Coarse global per-IP limit. Kept generous because many Nigerian
+  # mobile users share carrier-grade NAT IPs.
+  rule {
+    name     = "RateLimitGlobalPerIp"
+    priority = 60
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit                 = var.waf_rate_limit_per_ip
+        aggregate_key_type    = "IP"
+        evaluation_window_sec = 300
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name}-rate-global"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${var.name}-api"
+    sampled_requests_enabled   = true
+  }
+}
+
+resource "aws_wafv2_ip_set" "platform_admin" {
+  count = length(var.platform_admin_cidrs) > 0 ? 1 : 0
+
+  name               = "${var.name}-platform-admin"
+  description        = "Admin networks allowed to call /v1/platform/*"
+  scope              = "REGIONAL"
+  ip_address_version = "IPV4"
+  addresses          = var.platform_admin_cidrs
+}
+
+# WAF requires the log group name to start with "aws-waf-logs-".
+resource "aws_cloudwatch_log_group" "waf" {
+  # Retention is per env (prod 365 days); dev/staging keep less to save cost.
+  #checkov:skip=CKV_AWS_338:Retention variable-driven; prod = 365 days
+  name              = "aws-waf-logs-${var.name}"
+  retention_in_days = var.log_retention_in_days
+  kms_key_id        = aws_kms_key.this["logs"].arn
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "this" {
+  log_destination_configs = [aws_cloudwatch_log_group.waf.arn]
+  resource_arn            = aws_wafv2_web_acl.this.arn
+
+  # Bearer tokens and cookies must never land in logs (JWTs are
+  # replayable for 15 minutes).
+  redacted_fields {
+    single_header {
+      name = "authorization"
+    }
+  }
+
+  redacted_fields {
+    single_header {
+      name = "cookie"
+    }
+  }
+}

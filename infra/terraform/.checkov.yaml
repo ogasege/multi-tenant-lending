@@ -1,0 +1,16 @@
+# checkov --config-file .checkov.yaml  (run from infra/terraform)
+#
+# Policy: NO global skips. Every exception is an inline
+# `#checkov:skip=<ID>:<reason>` on the specific resource, so the
+# justification sits next to the code it excuses and is reviewed with it.
+directory:
+  - .
+framework:
+  - terraform
+compact: true
+quiet: true
+# Registry modules (terraform-aws-modules/vpc) are scanned by their own
+# maintainers; we scan our configuration of them via the module call.
+download-external-modules: false
+skip-path:
+  - .terraform

@@ -1,0 +1,7 @@
+aws_region        = "af-south-1"
+project           = "lending"
+github_repository = "your-org/10mg-lending-core"
+environments      = ["dev", "staging", "prod"]
+owner             = "platform-team"
+dns_zone_name     = "example.com"
+cell_regions      = ["eu-west-3"]

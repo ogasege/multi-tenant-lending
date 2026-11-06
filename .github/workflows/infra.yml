@@ -1,0 +1,273 @@
+# Terraform quality gates (every PR touching infra) and gated applies.
+#
+# Third-party actions are pinned by full commit SHA (tag in the comment)
+# so a moved or compromised tag cannot change what runs. Tool versions
+# match infra/terraform/.terraform-version and .tflint.hcl.
+name: infra
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra.yml"
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra.yml"
+
+# Least privilege by default; the only job that needs more (OIDC) asks
+# for it explicitly.
+permissions:
+  contents: read
+
+concurrency:
+  group: infra-${{ github.ref }}
+  # Never cancel an in-flight apply (half-applied state is worse).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TF_VERSION: "1.10.3"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  WORKDIR: infra/terraform
+
+jobs:
+  fmt:
+    name: terraform fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive -diff
+        working-directory: ${{ env.WORKDIR }}
+
+  validate:
+    name: validate ${{ matrix.dir }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        dir:
+          - bootstrap
+          - global
+          - modules/directory
+          - modules/edge
+          - modules/network
+          - modules/security
+          - modules/platform
+          - modules/database
+          - modules/cache
+          - modules/messaging
+          - modules/storage
+          - modules/ecr
+          - modules/ecs-service
+          - modules/alb
+          - modules/observability
+          - modules/platform
+          - environments/dev
+          - environments/staging
+          - environments/prod
+          - environments/local
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      # -lockfile=readonly: CI must use exactly the committed provider
+      # versions/hashes; drift fails here instead of being "fixed" silently.
+      - run: terraform init -backend=false -lockfile=readonly
+        working-directory: ${{ env.WORKDIR }}/${{ matrix.dir }}
+      - run: terraform validate
+        working-directory: ${{ env.WORKDIR }}/${{ matrix.dir }}
+
+  test:
+    name: terraform test ${{ matrix.dir }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        dir:
+          - modules/messaging
+          - modules/storage
+          - modules/ecs-service
+          - modules/directory
+          - modules/security
+          - modules/platform
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - run: terraform init -backend=false -lockfile=readonly
+        working-directory: ${{ env.WORKDIR }}/${{ matrix.dir }}
+      # mock_provider: no AWS credentials, no cost.
+      - run: terraform test
+        working-directory: ${{ env.WORKDIR }}/${{ matrix.dir }}
+
+  tflint:
+    name: tflint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: v0.65.0
+      - name: tflint --init
+        run: tflint --init
+        working-directory: ${{ env.WORKDIR }}
+        env:
+          # Avoids anonymous GitHub API rate limits when fetching the plugin.
+          GITHUB_TOKEN: ${{ github.token }}
+      - run: tflint --recursive --config "$PWD/.tflint.hcl" --format compact
+        working-directory: ${{ env.WORKDIR }}
+
+  checkov:
+    name: checkov
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Image pinned by digest (3.4.3) - same version used locally. All
+      # exceptions are inline #checkov:skip comments with reasons.
+      - name: checkov
+        working-directory: ${{ env.WORKDIR }}
+        run: >
+          docker run --rm -v "$PWD:/tf" -w /tf
+          bridgecrew/checkov:3.4.3@sha256:bfe9d70bb7f044aba49bd99675813445f106dee6072da583f51008cb667f3a63
+          --config-file .checkov.yaml
+
+  # Speculative plan for non-prod on PRs. Uses the read-only plan role
+  # (OIDC sub = repo:<repo>:pull_request): non-prod state only, no
+  # secret values, no lock writes - hence -refresh=false -lock=false.
+  # Skipped until the bootstrap outputs are configured as repo vars.
+  plan:
+    name: plan ${{ matrix.environment }}
+    if: github.event_name == 'pull_request' && vars.AWS_PLAN_ROLE_ARN != '' && github.event.pull_request.head.repo.full_name == github.repository
+    needs: [fmt, validate, tflint, checkov, test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # OIDC token for AssumeRoleWithWebIdentity
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, staging]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: af-south-1
+          role-session-name: gha-plan-${{ matrix.environment }}-${{ github.run_id }}
+      - name: Write non-secret tfvars from repository variables
+        working-directory: ${{ env.WORKDIR }}/environments/${{ matrix.environment }}
+        env:
+          TFVARS: ${{ matrix.environment == 'dev' && vars.TFVARS_DEV || vars.TFVARS_STAGING }}
+        run: printf '%s\n' "$TFVARS" > ci.auto.tfvars
+      - run: terraform init -lockfile=readonly -backend-config="bucket=$TF_STATE_BUCKET"
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+        working-directory: ${{ env.WORKDIR }}/environments/${{ matrix.environment }}
+      - run: terraform plan -refresh=false -lock=false -no-color
+        working-directory: ${{ env.WORKDIR }}/environments/${{ matrix.environment }}
+
+  # Applies on merge to main: dev -> staging -> prod, the same image
+  # digest promoted through each (IMAGE_REFERENCE is set per GitHub
+  # Environment by the release pipeline). Each job is bound to a GitHub
+  # Environment, which is what makes the OIDC sub
+  # repo:<repo>:environment:<env> that the per-env apply role trusts.
+  # prod's Environment has required reviewers => human approval gate.
+  apply:
+    name: apply ${{ matrix.environment }}
+    if: github.event_name == 'push' && vars.INFRA_APPLY_ENABLED == 'true'
+    needs: [fmt, validate, tflint, checkov, test]
+    runs-on: ubuntu-24.04
+    environment: ${{ matrix.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      # Sequential promotion; stop at the first failing environment.
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        environment: [dev, staging, prod]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: af-south-1
+          role-session-name: gha-apply-${{ matrix.environment }}-${{ github.run_id }}
+      - name: Write non-secret tfvars from environment variables
+        working-directory: ${{ env.WORKDIR }}/environments/${{ matrix.environment }}
+        env:
+          TFVARS: ${{ vars.TFVARS }}
+          IMAGE_REFERENCE: ${{ vars.IMAGE_REFERENCE }}
+          MIGRATIONS_IMAGE_REFERENCE: ${{ vars.MIGRATIONS_IMAGE_REFERENCE }}
+        run: |
+          printf '%s\n' "$TFVARS" > ci.auto.tfvars
+          printf 'image_reference = "%s"\n' "$IMAGE_REFERENCE" >> ci.auto.tfvars
+          printf 'migrations_image_reference = "%s"\n' "$MIGRATIONS_IMAGE_REFERENCE" >> ci.auto.tfvars
+      - run: terraform init -lockfile=readonly -backend-config="bucket=$TF_STATE_BUCKET"
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+        working-directory: ${{ env.WORKDIR }}/environments/${{ matrix.environment }}
+      # Release order: (1) migrations image already built + pushed by
+      # the app pipeline (db/Dockerfile, tagged by git SHA, referenced by
+      # digest); (2) register ONLY the new migrate task definition (plus
+      # its dependencies on first deploy) and run it to exit 0; (3) only
+      # then roll api/worker. New code never meets an old schema.
+      - name: Register migrate task definition
+        working-directory: ${{ env.WORKDIR }}/environments/${{ matrix.environment }}
+        run: terraform apply -auto-approve -no-color -target='module.platform.module.ecs.aws_ecs_task_definition.this["migrate"]'
+      - name: Run Flyway migrations and wait for exit code 0
+        working-directory: ${{ env.WORKDIR }}/environments/${{ matrix.environment }}
+        run: |
+          set -euo pipefail
+          cluster="$(terraform output -raw ecs_cluster_name)"
+          taskdef="$(terraform output -raw migrate_task_definition_arn)"
+          netcfg="$(terraform output -json migrate_network_configuration)"
+          task="$(aws ecs run-task --cluster "$cluster" --launch-type FARGATE \
+            --task-definition "$taskdef" \
+            --network-configuration "{\"awsvpcConfiguration\": $netcfg}" \
+            --started-by "gha-${GITHUB_RUN_ID}" \
+            --query 'tasks[0].taskArn' --output text)"
+          aws ecs wait tasks-stopped --cluster "$cluster" --tasks "$task"
+          code="$(aws ecs describe-tasks --cluster "$cluster" --tasks "$task" \
+            --query 'tasks[0].containers[0].exitCode' --output text)"
+          echo "migrate exit code: $code"
+          test "$code" = "0"
+      # Full refresh here: this is where drift is detected, with the
+      # env-scoped role that is allowed to read its own secrets.
+      - run: terraform plan -out=tfplan -no-color
+        working-directory: ${{ env.WORKDIR }}/environments/${{ matrix.environment }}
+      - run: terraform apply -auto-approve tfplan
+        working-directory: ${{ env.WORKDIR }}/environments/${{ matrix.environment }}
