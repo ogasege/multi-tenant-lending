@@ -1,0 +1,7 @@
+# Build context of db/Dockerfile: only what the migrations image COPYs.
+*
+!docker-entrypoint.sh
+!flyway.toml
+!migrations/
+!callbacks/
+!tools/

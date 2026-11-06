@@ -1,11 +1,19 @@
 import { randomUUID } from 'node:crypto';
+import { appendFile, cp, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import type pg from 'pg';
+import pg from 'pg';
 
-import { runMigrations } from '@/common/database/migrate';
-
-import { clientFor, startPostgres, TEST_DB, type TestPostgres } from '../../setup/postgres';
+import {
+  clientFor,
+  DB_DIR,
+  migrate,
+  runFlyway,
+  startPostgres,
+  TEST_DB,
+  type TestPostgres,
+} from '../../setup/postgres';
 
 /**
  * Database-level guarantees, tested directly against Postgres with the real runtime roles.
@@ -45,8 +53,8 @@ describe('database guarantees (RLS, ledger, audit)', () => {
     await inTenant(app, id, async () => {
       await app.query("SELECT set_config('app.platform_admin', 'on', true)");
       await app.query(
-        `INSERT INTO institutions (id, slug, legal_name, country_code, default_currency, supported_currencies, lender_type)
-         VALUES ($1, $2, $3, 'NG', 'NGN', '{NGN}', 'MICROFINANCE_BANK')`,
+        `INSERT INTO institutions (id, slug, legal_name, country_code, default_currency, supported_currencies, lender_type, home_region)
+         VALUES ($1, $2, $3, 'NG', 'NGN', '{NGN}', 'MICROFINANCE_BANK', 'af-south-1')`,
         [id, slug, `${slug} Ltd`],
       );
       await app.query(
@@ -70,7 +78,7 @@ describe('database guarantees (RLS, ledger, audit)', () => {
   afterAll(async () => {
     await app.end();
     await worker.end();
-    await pgc.container.stop();
+    await pgc.stop();
   });
 
   describe('row-level security', () => {
@@ -234,6 +242,40 @@ describe('database guarantees (RLS, ledger, audit)', () => {
     });
   });
 
+  describe('data residency (home_region)', () => {
+    async function insertInstitution(homeRegion: string | null): Promise<void> {
+      const id = randomUUID();
+      await inTenant(app, id, async () => {
+        await app.query("SELECT set_config('app.platform_admin', 'on', true)");
+        await app.query(
+          `INSERT INTO institutions (id, slug, legal_name, country_code, default_currency, supported_currencies, lender_type, home_region)
+           VALUES ($1, $2, 'Residency Ltd', 'NG', 'NGN', '{NGN}', 'MICROFINANCE_BANK', $3)`,
+          [id, `res-${id.slice(0, 8)}`, homeRegion],
+        );
+      });
+    }
+
+    it.each(['AF-SOUTH-1', 'af-south', 'af_south_1', 'lagos', ''])(
+      'rejects the malformed region %j',
+      async (region) => {
+        await expect(insertInstitution(region)).rejects.toThrow(/check constraint/);
+      },
+    );
+
+    it('requires an explicit region: NOT NULL and no default after the backfill', async () => {
+      await expect(insertInstitution(null)).rejects.toThrow(/not-null constraint/);
+      const { rows } = await app.query<{ column_default: string | null }>(
+        `SELECT column_default FROM information_schema.columns
+          WHERE table_name = 'institutions' AND column_name = 'home_region'`,
+      );
+      expect(rows).toEqual([{ column_default: null }]);
+    });
+
+    it('accepts a well-formed AWS region', async () => {
+      await expect(insertInstitution('eu-west-3')).resolves.toBeUndefined();
+    });
+  });
+
   describe('least privilege', () => {
     it('denies DDL to the runtime roles', async () => {
       await expect(app.query('CREATE TABLE evil (id int)')).rejects.toThrow(/permission denied/);
@@ -248,25 +290,199 @@ describe('database guarantees (RLS, ledger, audit)', () => {
   });
 });
 
-describe('migration runner', () => {
-  it('is safe to re-run (every deploy runs it) and rejects edited migrations', async () => {
-    const pgc = await startPostgres();
+describe('migrations (Flyway)', () => {
+  let pgc: TestPostgres;
+
+  beforeAll(async () => {
+    pgc = await startPostgres();
+  }, 240_000);
+
+  afterAll(async () => {
+    await pgc.stop();
+  });
+
+  async function appliedVersions(): Promise<string[]> {
+    const owner = clientFor(pgc, 'owner');
+    await owner.connect();
     try {
-      const again = await runMigrations({
-        connection: {
-          host: pgc.host,
-          port: pgc.port,
-          database: TEST_DB.name,
-          user: TEST_DB.owner,
-          password: TEST_DB.ownerPassword,
-        },
-        appPassword: 'rotated-app-pw',
-        workerPassword: 'rotated-worker-pw',
-        dbDir: path.resolve(__dirname, '../../../db'),
-      });
-      expect(again).toEqual([]);
+      const { rows } = await owner.query<{ version: string }>(
+        'SELECT version FROM flyway_schema_history WHERE success ORDER BY installed_rank',
+      );
+      return rows.map((r) => r.version);
     } finally {
-      await pgc.container.stop();
+      await owner.end();
     }
+  }
+
+  // Runs first: later tests rotate the runtime roles' passwords.
+  it('keeps migration history out of reach of the runtime roles', async () => {
+    for (const role of ['app', 'worker'] as const) {
+      const client = clientFor(pgc, role);
+      await client.connect();
+      try {
+        await expect(client.query('SELECT * FROM flyway_schema_history')).rejects.toThrow(
+          /permission denied/,
+        );
+      } finally {
+        await client.end();
+      }
+    }
+  });
+
+  it('is safe to re-run (every deploy runs it): applies nothing, rotates passwords', async () => {
+    const before = await appliedVersions();
+    const logs = await migrate(pgc, {
+      appPassword: 'rotated-app-pw',
+      workerPassword: 'rotated-worker-pw',
+    });
+
+    expect(logs).toMatch(/No migration necessary/);
+    expect(await appliedVersions()).toEqual(before);
+
+    const rotated = new pg.Client({
+      host: pgc.host,
+      port: pgc.port,
+      database: TEST_DB.name,
+      user: 'lending_app',
+      password: 'rotated-app-pw',
+    });
+    await rotated.connect();
+    await rotated.end();
+  }, 180_000);
+
+  it('passes passwords to the role bootstrap as literals, not SQL', async () => {
+    const tricky = `it's $$ a \\ "tricky" | pw`;
+    await migrate(pgc, { appPassword: tricky, workerPassword: TEST_DB.workerPassword });
+    const app = new pg.Client({
+      host: pgc.host,
+      port: pgc.port,
+      database: TEST_DB.name,
+      user: 'lending_app',
+      password: tricky,
+    });
+    await app.connect();
+    await app.end();
+  }, 180_000);
+
+  it('stores SCRAM-SHA-256 verifiers, never sends plaintext, and the passwords log in', async () => {
+    const appPassword = 'scram-app-pw';
+    const workerPassword = 'scram-worker-pw';
+    const logs = await migrate(pgc, { appPassword, workerPassword });
+    expect(logs).not.toContain(appPassword);
+    expect(logs).not.toContain(workerPassword);
+
+    // pg_authid.rolpassword is readable by superusers only.
+    const su = new pg.Client({ connectionString: pgc.container.getConnectionUri() });
+    await su.connect();
+    try {
+      const { rows } = await su.query<{ rolname: string; rolpassword: string }>(
+        `SELECT rolname, rolpassword FROM pg_authid
+          WHERE rolname IN ('lending_app', 'lending_worker') ORDER BY rolname`,
+      );
+      expect(rows.map((r) => r.rolname)).toEqual(['lending_app', 'lending_worker']);
+      for (const { rolpassword } of rows) {
+        expect(rolpassword).toMatch(
+          /^SCRAM-SHA-256\$4096:[A-Za-z0-9+/]+=*\$[A-Za-z0-9+/]+=*:[A-Za-z0-9+/]+=*$/,
+        );
+      }
+    } finally {
+      await su.end();
+    }
+
+    for (const [user, password] of [
+      ['lending_app', appPassword],
+      ['lending_worker', workerPassword],
+    ] as const) {
+      const client = new pg.Client({
+        host: pgc.host,
+        port: pgc.port,
+        database: TEST_DB.name,
+        user,
+        password,
+      });
+      await client.connect();
+      await client.end();
+    }
+  }, 180_000);
+
+  it('refuses passwords SASLprep would alter (non-ASCII) before touching the database', async () => {
+    const result = await runFlyway(pgc, { appPassword: 'pässwörd' });
+    expect(result.ok).toBe(false);
+    expect(result.logs).toMatch(/DATABASE_APP_PASSWORD must be printable ASCII/);
+  }, 180_000);
+
+  it('refuses a plaintext password handed straight to Flyway', async () => {
+    // Bypasses the entrypoint's hashing by overriding the placeholder Flyway reads.
+    const result = await runFlyway(pgc, {
+      env: {
+        FLYWAY_URL: `jdbc:postgresql://postgres:5432/${TEST_DB.name}?sslmode=disable`,
+        FLYWAY_USER: TEST_DB.owner,
+        FLYWAY_PASSWORD: TEST_DB.ownerPassword,
+        FLYWAY_PLACEHOLDERS_APPPASSWORDSCRAM: 'plaintext-pw',
+        FLYWAY_PLACEHOLDERS_WORKERPASSWORDSCRAM: 'plaintext-pw',
+      },
+      entrypoint: ['flyway', '-configFiles=db/flyway.toml'],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.logs).toMatch(/not a SCRAM-SHA-256 verifier/);
+  }, 180_000);
+
+  it('refuses to run when an applied migration was edited (checksum mismatch)', async () => {
+    const edited = await mkdtemp(path.join(tmpdir(), 'lending-db-'));
+    try {
+      await cp(DB_DIR, edited, { recursive: true });
+      await appendFile(
+        path.join(edited, 'migrations', 'V1__core_schema.sql'),
+        '\n-- edited after it was applied\n',
+      );
+      const before = await appliedVersions();
+
+      for (const command of ['validate', 'migrate']) {
+        const result = await runFlyway(pgc, { args: [command], dbDir: edited });
+        expect(result.ok).toBe(false);
+        expect(result.logs).toMatch(/checksum mismatch for migration version 1/i);
+      }
+      expect(await appliedVersions()).toEqual(before);
+    } finally {
+      await rm(edited, { recursive: true, force: true });
+    }
+  }, 180_000);
+
+  it('creates the keyset pagination indexes (V4)', async () => {
+    const owner = clientFor(pgc, 'owner');
+    await owner.connect();
+    try {
+      const { rows } = await owner.query<{ indexname: string; indexdef: string }>(
+        `SELECT indexname, indexdef FROM pg_indexes
+          WHERE schemaname = 'public' AND indexname LIKE '%\\_created\\_idx' ORDER BY indexname`,
+      );
+      const defs = Object.fromEntries(rows.map((r) => [r.indexname, r.indexdef]));
+      const tenantTables = [
+        'customers',
+        'loan_applications',
+        'loan_products',
+        'loans',
+        'repayments',
+        'users',
+        'webhook_endpoints',
+      ];
+      for (const table of tenantTables) {
+        expect(defs[`${table}_created_idx`]).toContain(
+          `ON public.${table} USING btree (tenant_id, created_at DESC, id DESC)`,
+        );
+      }
+      expect(defs.institutions_created_idx).toContain(
+        'ON public.institutions USING btree (created_at DESC, id DESC)',
+      );
+    } finally {
+      await owner.end();
+    }
+  });
+
+  it('never allows `flyway clean`', async () => {
+    const result = await runFlyway(pgc, { args: ['clean'] });
+    expect(result.ok).toBe(false);
+    expect(result.logs).toMatch(/cleanDisabled/);
+    expect((await appliedVersions()).length).toBeGreaterThan(0);
   }, 180_000);
 });

@@ -1,0 +1,40 @@
+# Flyway 11 configuration for the lending database (docs/design/SPEC.md §12).
+#
+# Paths are relative to the working directory, which must be the directory that CONTAINS
+# `db/` (the repo root locally; /flyway/project in the container, see db/Dockerfile and
+# db/docker-entrypoint.sh). Connection settings and the two role passwords are never
+# written here: docker-entrypoint.sh maps DATABASE_* onto FLYWAY_URL / FLYWAY_USER /
+# FLYWAY_PASSWORD / FLYWAY_PLACEHOLDERS_*.
+
+[environments.default]
+# Flyway owns exactly one schema; its history table (flyway_schema_history) lives there.
+schemas = ["public"]
+# The database may still be starting (compose, a fresh RDS instance): retry, don't fail.
+connectRetries = 10
+connectRetriesInterval = 5
+
+[flyway]
+environment = "default"
+defaultSchema = "public"
+locations = ["filesystem:db/migrations", "filesystem:db/callbacks"]
+# Typo'd or missing locations must fail, not silently apply nothing.
+failOnMissingLocations = true
+validateMigrationNaming = true
+
+# Refuse to run if an applied migration's checksum changed (edited after it was applied).
+validateOnMigrate = true
+# `flyway clean` drops every object in the schema: never allowed against a real database.
+cleanDisabled = true
+# Forward-only, strictly ordered history.
+outOfOrder = false
+# Never adopt a non-empty schema without an explicit, deliberate `flyway baseline`.
+baselineOnMigrate = false
+# Every migration runs in its own transaction; non-transactional statements are an error.
+mixed = false
+group = false
+
+# Required by db/callbacks/beforeMigrate.sql (appPassword, workerPassword).
+placeholderReplacement = true
+
+# Do not echo result sets (e.g. `SELECT app_enable_tenant_rls(...)`) into the task log.
+outputQueryResults = false

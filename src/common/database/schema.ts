@@ -78,6 +78,8 @@ export interface InstitutionsTable {
   status: ColumnType<'ACTIVE' | 'SUSPENDED', 'ACTIVE' | 'SUSPENDED' | undefined>;
   created_at: CreatedAt;
   updated_at: Generated<Date>;
+  /** AWS region of the cell holding this tenant's data (SPEC §4.1); no default. */
+  home_region: string;
 }
 
 export interface InstitutionBrandingTable {
