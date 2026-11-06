@@ -1,0 +1,60 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+coverage/
+.vitest/
+
+# Environment & secrets (env.example is committed; real values never are)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+# NB: .terraform.lock.hcl IS committed (provider pinning); *.auto.tfvars with secrets are not
+*.auto.tfvars
+*.auto.tfvars.json
+
+# LocalStack / docker volumes
+.localstack/
+volume/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Local tooling state (not part of the deliverable)
+.remember/
+.claude/
+
+# Assessment brief screenshots (kept locally, not part of the deliverable)
+/objectives.png
+/rules.png
