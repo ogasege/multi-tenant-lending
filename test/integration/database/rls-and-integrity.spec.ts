@@ -40,8 +40,10 @@ describe('database guarantees (RLS, ledger, audit)', () => {
     return Number(rows[0]!.n);
   }
 
+  /** Mirrors platform registration: platform scope + the new tenant pinned. */
   async function seedInstitution(id: string, slug: string): Promise<void> {
     await inTenant(app, id, async () => {
+      await app.query("SELECT set_config('app.platform_admin', 'on', true)");
       await app.query(
         `INSERT INTO institutions (id, slug, legal_name, country_code, default_currency, supported_currencies, lender_type)
          VALUES ($1, $2, $3, 'NG', 'NGN', '{NGN}', 'MICROFINANCE_BANK')`,
@@ -199,6 +201,36 @@ describe('database guarantees (RLS, ledger, audit)', () => {
       await expect(worker.query("UPDATE audit_log SET action = 'tampered'")).rejects.toThrow();
       await expect(worker.query('DELETE FROM audit_log')).rejects.toThrow();
       await expect(worker.query('TRUNCATE audit_log')).rejects.toThrow();
+    });
+  });
+
+  describe('platform-controlled data', () => {
+    it('lets a tenant read but never modify its own institution row (status, APR cap)', async () => {
+      const res = await inTenant(app, tenantA, async () => {
+        const visible = await countRows(app, 'institutions');
+        const updated = await app.query(
+          "UPDATE institutions SET status = 'ACTIVE', max_apr_bps = 99999 WHERE id = $1",
+          [tenantA],
+        );
+        return { visible, updated: updated.rowCount };
+      });
+      expect(res).toEqual({ visible: 1, updated: 0 });
+    });
+
+    it('hides platform admin credentials outside the platform auth scope', async () => {
+      await inTenant(app, null, async () => {
+        await app.query("SELECT set_config('app.platform_auth', 'on', true)");
+        await app.query(
+          `INSERT INTO platform_admins (email, password_hash, full_name) VALUES ('ops@10mg.ai', 'hash', 'Ops')`,
+        );
+      });
+      expect(await inTenant(app, tenantA, () => countRows(app, 'platform_admins'))).toBe(0);
+      expect(
+        await inTenant(app, null, async () => {
+          await app.query("SELECT set_config('app.platform_auth', 'on', true)");
+          return countRows(app, 'platform_admins');
+        }),
+      ).toBe(1);
     });
   });
 

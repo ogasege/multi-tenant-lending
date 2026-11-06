@@ -69,9 +69,16 @@ export class TransactionRunner {
     });
   }
 
-  /** Unscoped transaction: only for tables without RLS (platform admin credentials). */
-  runUnscoped<T>(fn: (tx: Tx) => Promise<T>, opts: TxOptions = {}): Promise<T> {
-    return this.execute(opts, fn);
+  /**
+   * Platform authentication scope: the only context in which platform admin credentials and
+   * refresh tokens are visible (`platform_auth_only` policies). Used by the platform auth
+   * service for login/refresh, before any token exists.
+   */
+  asPlatformAuth<T>(fn: (tx: Tx) => Promise<T>, opts: TxOptions = {}): Promise<T> {
+    return this.execute(opts, async (tx) => {
+      await sql`SELECT set_config('app.platform_auth', 'on', true)`.execute(tx);
+      return fn(tx);
+    });
   }
 
   private async execute<T>(opts: TxOptions, fn: (tx: Tx) => Promise<T>): Promise<T> {
