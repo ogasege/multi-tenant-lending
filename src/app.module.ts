@@ -14,6 +14,7 @@ import { LoanProductsModule } from './modules/loan-products/loan-products.module
 import { OperationsModule } from './modules/operations/operations.module';
 import { PlatformModule } from './modules/platform/platform.module';
 import { UsersModule } from './modules/users/users.module';
+import { WebhooksModule } from './modules/webhooks/webhooks.module';
 
 /**
  * HTTP API composition root. Feature modules are independent bounded contexts: none imports
@@ -39,6 +40,8 @@ import { UsersModule } from './modules/users/users.module';
     LendingModule,
     OperationsModule,
     AuditModule,
+    // Lender-facing webhook endpoint management (delivery runs in the worker process)
+    WebhooksModule,
   ],
 })
 export class AppModule {}
