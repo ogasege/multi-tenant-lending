@@ -7,12 +7,14 @@ import type { PayeeType } from '../../../common/database/schema';
 import { TransactionRunner } from '../../../common/database/transaction-runner';
 import {
   BusinessRuleError,
+  ConflictError,
   NotFoundError,
   ValidationError,
 } from '../../../common/errors/app-error';
 import { ErrorCode } from '../../../common/errors/error-codes';
 import { OutboxWriter } from '../../../common/outbox/outbox-writer';
 import {
+  type ApplicationRow,
   ApplicationsRepository,
   type CustomerRow,
 } from '../infrastructure/applications.repository';
@@ -20,6 +22,9 @@ import { newReference } from '../infrastructure/references';
 
 import { type ApplicationView, audienceOf, toApplicationView } from './lending.views';
 import { CheckoutOrders } from './ports/checkout-orders.port';
+
+/** The V5 partial unique index: one live application per (tenant, checkout order). */
+const ORDER_ONCE_CONSTRAINT = 'loan_applications_order_once';
 
 interface Payee {
   type: PayeeType;
@@ -56,13 +61,21 @@ export interface SubmitApplicationCommand {
  *   the payee is the order's vendor as resolved by the procurement platform
  *   ({@link CheckoutOrders}); an unknown order is 422 CHECKOUT_ORDER_NOT_FOUND. A payee in the
  *   request is optional and, if present, must be that same VENDOR account (else 422
- *   PAYEE_NOT_ALLOWED); its name is replaced by the platform's.
+ *   PAYEE_NOT_ALLOWED); its name is replaced by the platform's. When the platform attests
+ *   them, the order's buyer must be the applicant (422 ORDER_NOT_FOR_APPLICANT) and the
+ *   principal must not exceed the order total (422 ORDER_AMOUNT_EXCEEDED); the mock adapter
+ *   attests neither, real adapters must attest both.
  * - BORROWER-mode products: the payee is required; a CUSTOMER can only name a payee of the
  *   product's disbursement mode (a VENDOR payee is 422 PAYEE_NOT_ALLOWED), while staff may
  *   direct it to a vendor (audited). PRODUCTION PATH: the account is confirmed by a bank
  *   name enquiry (NIBSS NIP NE / the WAEMU switch equivalent) before approval, and the
  *   disbursement refused unless the returned account name matches the KYC-verified customer
  *   name; the mock payment gateway stands in for it today.
+ *
+ * An `externalOrderReference` backs at most one live (SUBMITTED, ASSESSED, APPROVED)
+ * application per tenant: checked in the transaction and, for concurrent submissions,
+ * enforced by the `loan_applications_order_once` unique index; both are 409
+ * ORDER_ALREADY_FINANCED. A rejected, withdrawn or expired application frees the order.
  */
 @Injectable()
 export class SubmitApplication {
@@ -119,9 +132,20 @@ export class SubmitApplication {
         );
       }
 
-      const payee = await this.payee(principal, version.disbursement_mode, version.currency, cmd);
+      const payee = await this.payee(principal, version.disbursement_mode, cmd, {
+        currency: version.currency,
+        customerId: customer.id,
+        principal: principalAmount,
+      });
+      const orderReference = cmd.externalOrderReference;
+      if (
+        orderReference !== undefined &&
+        (await this.repo.hasLiveApplicationForOrder(tx, orderReference))
+      ) {
+        throw orderAlreadyFinanced(orderReference);
+      }
 
-      const row = await this.repo.insert(tx, {
+      const row = await this.insert(tx, {
         tenant_id: principal.tenantId,
         reference: newReference('APP'),
         customer_id: customer.id,
@@ -134,7 +158,7 @@ export class SubmitApplication {
         payee_type: payee.type,
         payee_name: payee.name,
         payee_account: payee.account,
-        external_order_reference: cmd.externalOrderReference ?? null,
+        external_order_reference: orderReference ?? null,
         status: 'SUBMITTED',
         submitted_by: principal.id,
       });
@@ -165,13 +189,29 @@ export class SubmitApplication {
     });
   }
 
+  /** Inserts the application; losing the single-use race on the order is a 409. */
+  private async insert(
+    tx: Tx,
+    values: Parameters<ApplicationsRepository['insert']>[1],
+  ): Promise<ApplicationRow> {
+    try {
+      return await this.repo.insert(tx, values);
+    } catch (err) {
+      if (isUniqueViolationOf(err, ORDER_ONCE_CONSTRAINT)) {
+        throw orderAlreadyFinanced(values.external_order_reference ?? '');
+      }
+      throw err;
+    }
+  }
+
   /** The disbursement payee (rules in the class comment). */
   private async payee(
     principal: TenantUser,
     mode: PayeeType,
-    currency: string,
     cmd: SubmitApplicationCommand,
+    applicant: { currency: string; customerId: string; principal: bigint },
   ): Promise<Payee> {
+    const { currency } = applicant;
     if (mode === 'VENDOR') {
       const reference = cmd.externalOrderReference;
       if (reference === undefined) {
@@ -188,6 +228,21 @@ export class SubmitApplication {
           ErrorCode.CHECKOUT_ORDER_NOT_FOUND,
           'The checkout order is unknown to the procurement platform',
           { externalOrderReference: reference },
+        );
+      }
+      // Buyer first: someone else's order reveals nothing more about it (not even its total).
+      if (order.buyerCustomerId !== undefined && order.buyerCustomerId !== applicant.customerId) {
+        throw new BusinessRuleError(
+          ErrorCode.ORDER_NOT_FOR_APPLICANT,
+          'The checkout order was not placed by the applicant',
+          { externalOrderReference: reference },
+        );
+      }
+      if (order.total !== undefined && applicant.principal > order.total) {
+        throw new BusinessRuleError(
+          ErrorCode.ORDER_AMOUNT_EXCEEDED,
+          `The principal exceeds the checkout order total of ${order.total} ${currency} minor units`,
+          { externalOrderReference: reference, orderTotal: order.total.toString() },
         );
       }
       if (
@@ -232,4 +287,24 @@ export class SubmitApplication {
     }
     return this.repo.customerById(tx, customerId);
   }
+}
+
+function orderAlreadyFinanced(externalOrderReference: string): ConflictError {
+  return new ConflictError(
+    ErrorCode.ORDER_ALREADY_FINANCED,
+    'The checkout order already backs a live loan application',
+    { externalOrderReference },
+  );
+}
+
+/** A PostgreSQL unique violation (23505) raised by the named constraint / unique index. */
+function isUniqueViolationOf(err: unknown, constraint: string): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    err.code === '23505' &&
+    'constraint' in err &&
+    err.constraint === constraint
+  );
 }

@@ -1,5 +1,5 @@
 import type { INestApplication, Type } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
+import { Test, type TestingModuleBuilder } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { App } from 'supertest/types';
 import { inject } from 'vitest';
@@ -20,18 +20,20 @@ export interface TestApp {
  *
  * `envOverrides` change the configuration of THIS app only (e.g. a second cell with its own
  * `CELL_REGION` and `DATABASE_NAME`): configuration is parsed once while the module compiles,
- * so the overrides are applied to `process.env` just for that and then reverted.
+ * so the overrides are applied to `process.env` just for that and then reverted. `configure`
+ * can override providers (e.g. a strict fake procurement-platform adapter).
  */
 export async function createTestApp(
   extraModules: Type[] = [],
   envOverrides: Record<string, string> = {},
+  configure: (builder: TestingModuleBuilder) => TestingModuleBuilder = (b) => b,
 ): Promise<TestApp> {
   const base = inject('env');
   Object.assign(process.env, base, envOverrides);
   try {
-    const moduleRef = await Test.createTestingModule({
-      imports: [AppModule, ...extraModules],
-    }).compile();
+    const moduleRef = await configure(
+      Test.createTestingModule({ imports: [AppModule, ...extraModules] }),
+    ).compile();
     const app = moduleRef.createNestApplication<NestExpressApplication>({ logger: false });
     configureApp(app, app.get<Env>(APP_CONFIG));
     await app.init();

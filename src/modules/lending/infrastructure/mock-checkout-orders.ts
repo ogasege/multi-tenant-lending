@@ -19,6 +19,12 @@ const DEFAULT_VENDOR: CheckoutOrder['vendor'] = {
  * Every demo reference (`ORD-` followed by digits and dashes) is an order payable to the
  * demo supplier of its currency; any other reference is unknown. Development and tests only
  * (refused in production).
+ *
+ * The mock procurement platform cannot attest the buyer or the total of an order, so it
+ * leaves `buyerCustomerId` and `total` undefined and the applicant / amount checks of
+ * {@link CheckoutOrders} are skipped with it. Those checks are exercised in tests with a
+ * strict fake adapter and enforced by real adapters, which must return both. Single use
+ * of an order reference is enforced by the application, whatever the adapter.
  */
 @Injectable()
 export class MockCheckoutOrders extends CheckoutOrders {

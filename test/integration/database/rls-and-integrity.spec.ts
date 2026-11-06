@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, cp, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -278,6 +278,142 @@ describe('database guarantees (RLS, ledger, audit)', () => {
     });
   });
 
+  describe('checkout order single use (V5)', () => {
+    interface Applicant {
+      customerId: string;
+      productId: string;
+      productVersionId: string;
+      userId: string;
+    }
+    const applicants = new Map<string, Applicant>();
+
+    /** One user, customer and product version per tenant: the FKs an application needs. */
+    async function applicantFor(tenant: string): Promise<Applicant> {
+      const cached = applicants.get(tenant);
+      if (cached) return cached;
+      const created = await inTenant(app, tenant, async () => {
+        const tag = randomUUID().slice(0, 8);
+        const user = await app.query<{ id: string }>(
+          `INSERT INTO users (tenant_id, email, password_hash, full_name, role)
+           VALUES ($1, $2, 'hash', 'Ada Obi', 'CUSTOMER') RETURNING id`,
+          [tenant, `ada-${tag}@example.com`],
+        );
+        const userId = user.rows[0]!.id;
+        const customer = await app.query<{ id: string }>(
+          `INSERT INTO customers (tenant_id, user_id, reference, customer_type, first_name, last_name,
+                                  email, phone, date_of_birth, national_id_hmac, national_id_last4,
+                                  employment_status, currency, monthly_income)
+           VALUES ($1, $2, $3, 'INDIVIDUAL', 'Ada', 'Obi', $4, '+2348000000000', '1990-01-01',
+                   $5, '1234', 'BUSINESS_OWNER', 'NGN', 50000000) RETURNING id`,
+          [tenant, userId, `CUS-${tag}`, `ada-${tag}@example.com`, `hmac-${tag}`],
+        );
+        const product = await app.query<{ id: string }>(
+          `INSERT INTO loan_products (tenant_id, code, name) VALUES ($1, $2, 'Stock finance')
+           RETURNING id`,
+          [tenant, `SF-${tag.toUpperCase()}`],
+        );
+        const productId = product.rows[0]!.id;
+        const version = await app.query<{ id: string }>(
+          `INSERT INTO loan_product_versions (tenant_id, product_id, version, currency,
+                                              min_principal, max_principal, min_term, max_term,
+                                              repayment_frequency, interest_method,
+                                              annual_interest_rate_bps, origination_fee_type,
+                                              late_fee_type)
+           VALUES ($1, $2, 1, 'NGN', 100000, 100000000, 1, 12, 'MONTHLY', 'REDUCING_BALANCE',
+                   3000, 'NONE', 'NONE') RETURNING id`,
+          [tenant, productId],
+        );
+        return {
+          customerId: customer.rows[0]!.id,
+          productId,
+          productVersionId: version.rows[0]!.id,
+          userId,
+        };
+      });
+      applicants.set(tenant, created);
+      return created;
+    }
+
+    async function submitApplication(tenant: string, orderRef: string | null): Promise<string> {
+      const a = await applicantFor(tenant);
+      return inTenant(app, tenant, async () => {
+        const res = await app.query<{ id: string }>(
+          `INSERT INTO loan_applications (tenant_id, reference, customer_id, product_id,
+                                          product_version_id, currency, requested_principal, term,
+                                          payee_type, payee_name, payee_account,
+                                          external_order_reference, status, submitted_by)
+           VALUES ($1, $2, $3, $4, $5, 'NGN', 2500000, 3, 'VENDOR', 'Emzor Pharma',
+                   '0123456789', $6, 'SUBMITTED', $7) RETURNING id`,
+          [
+            tenant,
+            `APP-${randomUUID()}`,
+            a.customerId,
+            a.productId,
+            a.productVersionId,
+            orderRef,
+            a.userId,
+          ],
+        );
+        return res.rows[0]!.id;
+      });
+    }
+
+    async function setStatus(tenant: string, id: string, status: string): Promise<void> {
+      await inTenant(app, tenant, () =>
+        app.query('UPDATE loan_applications SET status = $2 WHERE id = $1', [id, status]),
+      );
+    }
+
+    const duplicateOrder = expect.objectContaining({
+      code: '23505', // unique_violation
+      constraint: 'loan_applications_order_once',
+    });
+
+    it('rejects a second live application for the same order in the same tenant', async () => {
+      const order = `PO-${randomUUID()}`;
+      await submitApplication(tenantA, order);
+      await expect(submitApplication(tenantA, order)).rejects.toEqual(duplicateOrder);
+    });
+
+    it('keeps the order held while the first application is ASSESSED or APPROVED', async () => {
+      const order = `PO-${randomUUID()}`;
+      const first = await submitApplication(tenantA, order);
+      for (const status of ['ASSESSED', 'APPROVED']) {
+        await setStatus(tenantA, first, status);
+        await expect(submitApplication(tenantA, order)).rejects.toEqual(duplicateOrder);
+      }
+    });
+
+    it('lets a different tenant finance the same order reference', async () => {
+      const order = `PO-${randomUUID()}`;
+      await submitApplication(tenantA, order);
+      await expect(submitApplication(tenantB, order)).resolves.toEqual(expect.any(String));
+    });
+
+    it.each(['REJECTED', 'WITHDRAWN', 'EXPIRED'])(
+      'frees the order once the first application is %s',
+      async (status) => {
+        const order = `PO-${randomUUID()}`;
+        const first = await submitApplication(tenantA, order);
+        await setStatus(tenantA, first, status);
+        await expect(submitApplication(tenantA, order)).resolves.toEqual(expect.any(String));
+      },
+    );
+
+    it('blocks reviving a freed application while a newer one holds the order', async () => {
+      const order = `PO-${randomUUID()}`;
+      const first = await submitApplication(tenantA, order);
+      await setStatus(tenantA, first, 'WITHDRAWN');
+      await submitApplication(tenantA, order);
+      await expect(setStatus(tenantA, first, 'SUBMITTED')).rejects.toEqual(duplicateOrder);
+    });
+
+    it('does not constrain applications without an order reference', async () => {
+      await submitApplication(tenantA, null);
+      await expect(submitApplication(tenantA, null)).resolves.toEqual(expect.any(String));
+    });
+  });
+
   describe('least privilege', () => {
     it('denies DDL to the runtime roles', async () => {
       await expect(app.query('CREATE TABLE evil (id int)')).rejects.toThrow(/permission denied/);
@@ -502,17 +638,22 @@ describe('migrations (Flyway)', () => {
   }, 180_000);
 
   it('leaves migration history unreachable for the runtime roles when a migration fails', async () => {
-    // A fresh database where V1..V4 commit (V1 grants DML on ALL TABLES IN SCHEMA public)
-    // and V5 then fails, so afterMigrate never runs.
+    // A fresh database where every real migration commits (V1 grants DML on ALL TABLES IN
+    // SCHEMA public) and a planted next version then fails, so afterMigrate never runs.
+    const committed = (await readdir(path.join(DB_DIR, 'migrations')))
+      .map((f) => /^V(\d+)__.*\.sql$/.exec(f)?.[1])
+      .filter((v): v is string => v !== undefined)
+      .sort((a, b) => Number(a) - Number(b));
+    const failing = String(Number(committed.at(-1)) + 1);
     const database = 'lending_failed_run';
     await createDatabase(pgc, database);
     const broken = await mkdtemp(path.join(tmpdir(), 'lending-db-'));
     try {
       await cp(DB_DIR, broken, { recursive: true });
-      await writeFile(path.join(broken, 'migrations', 'V5__fails.sql'), 'SELECT 1/0;\n');
+      await writeFile(path.join(broken, 'migrations', `V${failing}__fails.sql`), 'SELECT 1/0;\n');
       const result = await runFlyway(pgc, { dbDir: broken, database });
       expect(result.ok).toBe(false);
-      expect(result.logs).toMatch(/version "5 - fails" failed/);
+      expect(result.logs).toContain(`version "${failing} - fails" failed`);
       expect(result.logs).toMatch(/Executing SQL callback: afterMigrateError/);
     } finally {
       await rm(broken, { recursive: true, force: true });
@@ -536,7 +677,8 @@ describe('migrations (Flyway)', () => {
         await client.end();
       }
     }
-    // The scenario is real: V1..V4 committed (with V1's broad grant) and V5 did not.
+    // The scenario is real: every real migration committed (with V1's broad grant) and the
+    // planted one did not.
     const owner = new pg.Client({
       host: pgc.host,
       port: pgc.port,
@@ -550,7 +692,7 @@ describe('migrations (Flyway)', () => {
         `SELECT version FROM flyway_history.flyway_schema_history
           WHERE success AND version IS NOT NULL ORDER BY installed_rank`,
       );
-      expect(rows.map((r) => r.version)).toEqual(['1', '2', '3', '4']);
+      expect(rows.map((r) => r.version)).toEqual(committed);
       const grant = await owner.query<{ granted: boolean }>(
         "SELECT has_table_privilege('lending_app', 'public.loans', 'INSERT') AS granted",
       );

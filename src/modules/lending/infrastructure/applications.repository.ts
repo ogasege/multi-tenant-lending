@@ -10,6 +10,16 @@ export type CustomerRow = Row<'customers'>;
 export type ProductRow = Row<'loan_products'>;
 export type VersionRow = Row<'loan_product_versions'>;
 
+/**
+ * Application statuses during which a checkout order counts as financed; must match the
+ * predicate of the `loan_applications_order_once` partial unique index (V5).
+ */
+export const LIVE_APPLICATION_STATUSES: readonly ApplicationStatus[] = [
+  'SUBMITTED',
+  'ASSESSED',
+  'APPROVED',
+];
+
 export interface InstitutionSettings {
   timezone: string;
   maxAprBps: number | null;
@@ -92,6 +102,22 @@ export class ApplicationsRepository {
       .values(values)
       .returningAll()
       .executeTakeFirstOrThrow();
+  }
+
+  /**
+   * Whether a live (SUBMITTED, ASSESSED or APPROVED) application already references this
+   * checkout order in the tenant: an order is financed at most once at a time. The unique
+   * partial index `loan_applications_order_once` closes the race between two submissions.
+   */
+  async hasLiveApplicationForOrder(tx: Tx, externalOrderReference: string): Promise<boolean> {
+    const row = await tx
+      .selectFrom('loan_applications')
+      .select('id')
+      .where('external_order_reference', '=', externalOrderReference)
+      .where('status', 'in', LIVE_APPLICATION_STATUSES)
+      .limit(1)
+      .executeTakeFirst();
+    return row !== undefined;
   }
 
   /**

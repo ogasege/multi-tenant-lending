@@ -30,6 +30,10 @@ export const ErrorCode = {
   PAYEE_NOT_ALLOWED: 'PAYEE_NOT_ALLOWED',
   /** The checkout order reference is unknown to the procurement platform. */
   CHECKOUT_ORDER_NOT_FOUND: 'CHECKOUT_ORDER_NOT_FOUND',
+  /** The requested principal is above the checkout order's total. */
+  ORDER_AMOUNT_EXCEEDED: 'ORDER_AMOUNT_EXCEEDED',
+  /** The checkout order was placed by another customer than the applicant. */
+  ORDER_NOT_FOR_APPLICANT: 'ORDER_NOT_FOR_APPLICANT',
   IDEMPOTENCY_KEY_REQUIRED: 'IDEMPOTENCY_KEY_REQUIRED',
   IDEMPOTENCY_KEY_REUSED: 'IDEMPOTENCY_KEY_REUSED',
   UNSAFE_WEBHOOK_URL: 'UNSAFE_WEBHOOK_URL',
@@ -59,6 +63,8 @@ export const ErrorCode = {
   DUPLICATE: 'DUPLICATE',
   /** Sign-up details clash with an existing account (deliberately not saying which). */
   REGISTRATION_CONFLICT: 'REGISTRATION_CONFLICT',
+  /** The checkout order already backs a live (submitted, assessed or approved) application. */
+  ORDER_ALREADY_FINANCED: 'ORDER_ALREADY_FINANCED',
 
   // 429 / 5xx
   RATE_LIMITED: 'RATE_LIMITED',

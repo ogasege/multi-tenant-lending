@@ -68,7 +68,7 @@ export class ApplicationsController {
     summary: 'Apply for a loan (customers for themselves, credit officers for a customer)',
   })
   @ApiCreatedResponse({ type: ApplicationDto })
-  @ApiProblemResponses(400, 404, 422)
+  @ApiProblemResponses(400, 404, 409, 422)
   create(
     @CurrentTenantUser() principal: TenantUser,
     @Body() dto: SubmitApplicationDto,

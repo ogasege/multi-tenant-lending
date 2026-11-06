@@ -681,9 +681,13 @@ describe('Lending rules', () => {
         account: '0123456789',
       });
       // A payee that matches the order's vendor account is accepted; the name is the platform's.
+      // (Another order: the first one now backs a live application.)
       const matching = await apply(
         alice.token,
-        vendorBody({ payee: { type: 'VENDOR', name: 'Whatever', account: '0123456789' } }),
+        vendorBody({
+          externalOrderReference: 'ORD-2026-000778',
+          payee: { type: 'VENDOR', name: 'Whatever', account: '0123456789' },
+        }),
       ).expect(201);
       expect(matching.body.payee.name).toBe('Medisource Distributors Ltd');
     });
