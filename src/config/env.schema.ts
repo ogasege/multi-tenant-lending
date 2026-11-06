@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { isOriginSuffix, parseCellOriginMap, parseOrigin } from './cell-origins';
+
 const bool = z
   .enum(['true', 'false'])
   .default('false')
@@ -24,7 +26,8 @@ export const envSchema = z.object({
   DATABASE_APP_USER: z.string().default('lending_app'),
   DATABASE_APP_PASSWORD: z.string().min(1),
   DATABASE_WORKER_USER: z.string().default('lending_worker'),
-  DATABASE_WORKER_PASSWORD: z.string().min(1),
+  // Only the worker process receives these (least privilege); validated in WorkerModule.
+  DATABASE_WORKER_PASSWORD: z.string().min(1).optional(),
   DATABASE_POOL_MAX: z.coerce.number().int().positive().default(10),
 
   REDIS_URL: z.url(),
@@ -44,6 +47,27 @@ export const envSchema = z.object({
   SQS_DOMAIN_EVENTS_QUEUE_URL: z.url(),
   S3_BRANDING_BUCKET: z.string().min(3),
 
+  // Cell-based deployment (SPEC §4.1). CELL_REGION defaults to AWS_REGION (see parseEnv).
+  CELL_REGION: z
+    .string()
+    .regex(/^[a-z]{2}(-[a-z]+)+-\d$/, 'CELL_REGION must be an AWS region code')
+    .optional(),
+  /** Stable public origin of this cell, e.g. https://af-south-1.api.example.com. */
+  CELL_API_BASE_URL: z.url(),
+  /** DynamoDB global table holding the tenant directory projection. */
+  DIRECTORY_TABLE_NAME: z.string().min(3).max(255),
+  /**
+   * Trusted cells: JSON map region → public origin. Redirects (307), 421 hints and the
+   * unverified-token cell hint are only ever produced for these regions/origins. Either this
+   * or `CELL_ORIGIN_SUFFIX` is required in production.
+   */
+  CELL_ORIGINS: z.string().optional(),
+  /** Alternative to `CELL_ORIGINS`: a cell's origin is `https://<region><suffix>`. */
+  CELL_ORIGIN_SUFFIX: z
+    .string()
+    .refine(isOriginSuffix, 'CELL_ORIGIN_SUFFIX must look like .api.example.com')
+    .optional(),
+
   CORS_ORIGINS: z
     .string()
     .default('')
@@ -53,13 +77,107 @@ export const envSchema = z.object({
         .map((s) => s.trim())
         .filter(Boolean),
     ),
+  // Per authenticated principal / per tenant and principal class / per anonymous client IP,
+  // per minute. Staff and customers of one tenant have SEPARATE tenant budgets, so
+  // self-registered customers can never exhaust the budget the lender's staff depend on.
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(300),
+  RATE_LIMIT_TENANT_STAFF_PER_MINUTE: z.coerce.number().int().positive().default(3000),
+  RATE_LIMIT_TENANT_CUSTOMER_PER_MINUTE: z.coerce.number().int().positive().default(1500),
+  RATE_LIMIT_PUBLIC_PER_MINUTE: z.coerce.number().int().positive().default(60),
   AUTH_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(20),
+  /** New customer registrations per institution per hour (on top of the per-IP `auth` limit). */
+  SIGNUP_RATE_LIMIT_PER_HOUR: z.coerce.number().int().positive().default(30),
+
+  /**
+   * Identity (BVN/NIN) verification provider. Only `mock` exists today and it is refused in
+   * production; a real provider (NIBSS BVN, NIMC NIN, Smile ID…) plugs in behind the
+   * `IdentityVerifier` port in src/modules/customers/kyc.ts.
+   */
+  KYC_PROVIDER: z.enum(['mock']).default('mock'),
+
+  /**
+   * Test-only escape hatch for the webhook SSRF guard: allows endpoints that resolve to
+   * loopback/private addresses (an e2e HTTPS server on localhost). Refused in production.
+   */
+  WEBHOOK_ALLOW_PRIVATE_TARGETS: bool,
 });
 
-export type Env = z.infer<typeof envSchema>;
+type ParsedEnv = z.infer<typeof envSchema>;
 
-export function parseEnv(source: NodeJS.ProcessEnv = process.env): Env {
+/**
+ * Validated configuration; `CELL_REGION` is always resolved (it defaults to `AWS_REGION`) and
+ * `CELL_ORIGINS` is the parsed region → origin map.
+ */
+export type Env = Omit<ParsedEnv, 'CELL_REGION' | 'CELL_ORIGINS'> & {
+  CELL_REGION: string;
+  CELL_ORIGINS?: Readonly<Record<string, string>>;
+};
+
+/** Secrets checked for the `local-only` placeholder prefix used by docker-compose. */
+const SECRET_KEYS = [
+  'JWT_SECRET',
+  'BVN_HMAC_KEY',
+  'DATA_ENCRYPTION_KEY',
+  'DATABASE_APP_PASSWORD',
+  'DATABASE_WORKER_PASSWORD',
+] as const;
+
+const fail = (key: string, message: string): never => {
+  throw new Error(`Invalid environment configuration:\n  - ${key}: ${message}`);
+};
+
+/**
+ * Which process is booting. The shared contract (TLS, secrets, cells) is checked for both;
+ * checks that guard API-only features (KYC) apply to the API alone, so the worker, which
+ * never verifies identities, does not have to carry API-only settings.
+ */
+export type ProcessRole = 'api' | 'worker';
+
+export interface ParseEnvOptions {
+  role?: ProcessRole;
+}
+
+/** Production-only hardening (L7, L10): refuse settings that are only safe locally. */
+function assertProductionSafe(env: ParsedEnv, cellRegion: string, role: ProcessRole): void {
+  const issues: string[] = [];
+  const check = (ok: boolean, key: string, message: string) => {
+    if (!ok) issues.push(`  - ${key}: ${message}`);
+  };
+  check(env.DATABASE_SSL, 'DATABASE_SSL', 'must be true in production');
+  check(
+    new URL(env.REDIS_URL).protocol === 'rediss:',
+    'REDIS_URL',
+    'must use TLS (rediss://) in production',
+  );
+  check(!env.AWS_ENDPOINT_URL, 'AWS_ENDPOINT_URL', 'must not be set in production');
+  for (const key of SECRET_KEYS) {
+    check(!env[key]?.startsWith('local-only'), key, 'is a local placeholder secret');
+  }
+  check(
+    !env.WEBHOOK_ALLOW_PRIVATE_TARGETS,
+    'WEBHOOK_ALLOW_PRIVATE_TARGETS',
+    'must not be enabled in production',
+  );
+  check(
+    // Widened on purpose: real providers will join the enum. API-only: the worker does no KYC.
+    role !== 'api' || (env.KYC_PROVIDER as string) !== 'mock',
+    'KYC_PROVIDER',
+    'the mock identity verifier must not be used in production',
+  );
+  check(
+    Boolean(env.CELL_ORIGINS ?? env.CELL_ORIGIN_SUFFIX),
+    'CELL_ORIGINS',
+    `CELL_ORIGINS or CELL_ORIGIN_SUFFIX is required (cell ${cellRegion})`,
+  );
+  if (issues.length > 0) {
+    throw new Error(`Invalid environment configuration:\n${issues.join('\n')}`);
+  }
+}
+
+export function parseEnv(
+  source: NodeJS.ProcessEnv = process.env,
+  { role = 'api' }: ParseEnvOptions = {},
+): Env {
   const result = envSchema.safeParse(source);
   if (!result.success) {
     const issues = result.error.issues
@@ -67,5 +185,26 @@ export function parseEnv(source: NodeJS.ProcessEnv = process.env): Env {
       .join('\n');
     throw new Error(`Invalid environment configuration:\n${issues}`);
   }
-  return result.data;
+  const env = result.data;
+  const production = env.NODE_ENV === 'production';
+  const cellRegion = env.CELL_REGION ?? env.AWS_REGION;
+  // Cells redirect clients to each other's origin: it must be a bare https:// origin. Plain
+  // http:// is accepted only outside production (no loopback exception in production).
+  const ownOrigin = parseOrigin(env.CELL_API_BASE_URL, !production);
+  if (!ownOrigin) fail('CELL_API_BASE_URL', 'must be a bare https:// origin');
+  if (production) assertProductionSafe(env, cellRegion, role);
+
+  let cellOrigins: Readonly<Record<string, string>> | undefined;
+  if (env.CELL_ORIGINS) {
+    try {
+      cellOrigins = parseCellOriginMap(env.CELL_ORIGINS, !production);
+    } catch (err) {
+      fail('CELL_ORIGINS', (err as Error).message);
+    }
+    const listed = cellOrigins?.[cellRegion];
+    if (listed !== undefined && listed !== ownOrigin) {
+      fail('CELL_ORIGINS', `the entry for ${cellRegion} must equal CELL_API_BASE_URL`);
+    }
+  }
+  return { ...env, CELL_REGION: cellRegion, CELL_ORIGINS: cellOrigins };
 }

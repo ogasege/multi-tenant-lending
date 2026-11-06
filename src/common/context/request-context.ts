@@ -1,5 +1,6 @@
 import type { ClsStore } from 'nestjs-cls';
 
+import type { Tx } from '../database/database.tokens';
 import type { UserRole } from '../database/schema';
 
 /** Who is making the request. Derived ONLY from a verified access token. */
@@ -15,4 +16,9 @@ export interface RequestContextStore extends ClsStore {
   tenantId?: string;
   ip?: string;
   userAgent?: string;
+  /**
+   * Request-wide transaction opened by the idempotency interceptor. `TransactionRunner.run`
+   * joins it, so the business write and the stored idempotent response commit atomically.
+   */
+  ambientTx?: Tx;
 }

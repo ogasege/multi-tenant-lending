@@ -5,11 +5,13 @@ import { sql } from 'kysely';
 import { ClsService } from 'nestjs-cls';
 
 import type { RequestContextStore } from '../context/request-context';
-import { UnauthenticatedError } from '../errors/app-error';
+import { ForbiddenError, UnauthenticatedError } from '../errors/app-error';
 
 import { APP_DB, type Db, type Tx } from './database.tokens';
 
-export type IsolationLevel = 'read committed' | 'repeatable read' | 'serializable';
+// REPEATABLE READ is deliberately not offered: its snapshot predates the audit chain's
+// advisory lock and could fork the hash chain. SERIALIZABLE aborts instead (and is retried).
+export type IsolationLevel = 'read committed' | 'serializable';
 
 export interface TxOptions {
   isolation?: IsolationLevel;
@@ -26,7 +28,7 @@ const RETRYABLE_SQLSTATES = new Set(['40001', '40P01']); // serialization_failur
  * `set_config('app.tenant_id', $1, true)` — `true` makes it transaction-local, so a pooled
  * connection can never leak one tenant's context into the next request. Postgres RLS policies
  * then filter every statement. Business rows, ledger postings, audit entries, outbox events and
- * the idempotency record are all written inside this same transaction (all-or-nothing).
+ * (for idempotent routes) the stored response are all written in one transaction.
  */
 @Injectable()
 export class TransactionRunner {
@@ -35,10 +37,15 @@ export class TransactionRunner {
     private readonly cls: ClsService<RequestContextStore>,
   ) {}
 
-  /** Run in the tenant of the current request (taken from the verified JWT). */
+  /**
+   * Run in the tenant of the current request (taken from the verified JWT). Joins the
+   * request's ambient transaction when an idempotent route opened one.
+   */
   run<T>(fn: (tx: Tx) => Promise<T>, opts: TxOptions = {}): Promise<T> {
     const tenantId = this.cls.isActive() ? this.cls.get('tenantId') : undefined;
     if (!tenantId) throw new UnauthenticatedError();
+    const ambient = this.cls.get('ambientTx');
+    if (ambient) return fn(ambient);
     return this.runForTenant(tenantId, fn, opts);
   }
 
@@ -56,12 +63,16 @@ export class TransactionRunner {
   /**
    * Platform-admin scope: enables the single `platform_admin_all` policy on `institutions`
    * (list / suspend). Optionally also pins a tenant, e.g. while registering a new institution.
-   * Callers must already have verified an `aud=platform` access token.
+   * Inside a request it requires a platform-admin principal (defence in depth: a tenant use case
+   * can never widen its scope by mistake); outside a request (CLI, tests) it is unrestricted.
    */
   asPlatformAdmin<T>(
     fn: (tx: Tx) => Promise<T>,
     opts: TxOptions & { tenantId?: string } = {},
   ): Promise<T> {
+    if (this.cls.isActive() && this.cls.get('principal')?.kind !== 'PLATFORM_ADMIN') {
+      return Promise.reject(new ForbiddenError());
+    }
     return this.execute(opts, async (tx) => {
       await sql`SELECT set_config('app.platform_admin', 'on', true)`.execute(tx);
       if (opts.tenantId) await setTenant(tx, opts.tenantId);
@@ -79,6 +90,29 @@ export class TransactionRunner {
       await sql`SELECT set_config('app.platform_auth', 'on', true)`.execute(tx);
       return fn(tx);
     });
+  }
+
+  /**
+   * Whether `slug` names an institution stored in THIS cell, via the SECURITY DEFINER function
+   * `resolve_institution` (it reveals only id + status). No tenant is pinned, so every
+   * RLS-protected table reads as empty inside this transaction. Used by cell routing before
+   * any tenant context exists.
+   */
+  async resolveInstitution(
+    slug: string,
+  ): Promise<{ id: string; status: 'ACTIVE' | 'SUSPENDED' } | undefined> {
+    const { rows } = await this.execute({}, (tx) =>
+      sql<{
+        id: string;
+        status: 'ACTIVE' | 'SUSPENDED';
+      }>`SELECT id, status FROM resolve_institution(${slug})`.execute(tx),
+    );
+    return rows[0];
+  }
+
+  /** Readiness probe: a trivial round-trip on the application pool. */
+  async ping(): Promise<void> {
+    await sql`SELECT 1`.execute(this.db);
   }
 
   private async execute<T>(opts: TxOptions, fn: (tx: Tx) => Promise<T>): Promise<T> {

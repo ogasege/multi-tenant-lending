@@ -72,3 +72,22 @@ export class ForbiddenError extends AppError {
     super(403, code, message);
   }
 }
+
+/**
+ * 421 Misdirected Request (RFC 9110 §15.5.20): the access token was issued by another cell,
+ * whose data this cell does not hold. Carries the token's home region and, when the tenant
+ * directory knows it, that cell's API base URL so the client can retry there.
+ */
+export class MisdirectedRequestError extends AppError {
+  constructor(
+    readonly homeRegion: string,
+    readonly apiBaseUrl?: string,
+  ) {
+    super(
+      421,
+      ErrorCode.MISDIRECTED_REQUEST,
+      `This credential was issued by the ${homeRegion} cell; send the request there`,
+      apiBaseUrl ? { homeRegion, apiBaseUrl } : { homeRegion },
+    );
+  }
+}
