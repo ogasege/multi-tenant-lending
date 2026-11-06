@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 128" width="500" height="128" role="img" aria-label="Delta CareLend">
+  <path d="M64 12 118 112H10Z" fill="#0E4C92"/>
+  <path d="M30 96c14-10 26 6 40-4s22-8 30-2" fill="none" stroke="#5EEAD4" stroke-width="7" stroke-linecap="round"/>
+  <path d="M64 46v28M50 60h28" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/>
+  <text x="140" y="74" font-family="Inter, Helvetica, Arial, sans-serif" font-size="46" font-weight="800" fill="#0E4C92">Delta</text>
+  <text x="262" y="74" font-family="Inter, Helvetica, Arial, sans-serif" font-size="46" font-weight="400" fill="#0B7A75">CareLend</text>
+</svg>

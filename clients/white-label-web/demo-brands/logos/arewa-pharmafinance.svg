@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 128" width="600" height="128" role="img" aria-label="Arewa PharmaFinance">
+  <circle cx="64" cy="64" r="56" fill="#5B2A86"/>
+  <path d="M34 92V62a30 30 0 0 1 60 0v30" fill="none" stroke="#D4A017" stroke-width="9" stroke-linecap="round"/>
+  <path d="M50 92V66a14 14 0 0 1 28 0v26" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/>
+  <text x="140" y="70" font-family="Inter, Helvetica, Arial, sans-serif" font-size="44" font-weight="700" fill="#3B1A57">Arewa</text>
+  <text x="142" y="102" font-family="Inter, Helvetica, Arial, sans-serif" font-size="22" font-weight="600" fill="#5B2A86">PharmaFinance</text>
+</svg>

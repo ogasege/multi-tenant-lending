@@ -1,0 +1,73 @@
+{
+  "$comment": "Fictional demo lenders with ORIGINAL branding (no real company names, logos or trademarks). Read by the backend seed (src/cli/seed-lenders.ts) to register each lender, upload its logo through the presigned POST and set its branding. Colours pass WCAG AA for white text on primary (see README).",
+  "lenders": [
+    {
+      "slug": "eko-medicredit",
+      "legalName": "Eko MediCredit Microfinance Bank Ltd",
+      "displayName": "Eko MediCredit",
+      "city": "Lagos",
+      "countryCode": "NG",
+      "currency": "NGN",
+      "lenderType": "MICROFINANCE_BANK",
+      "maxAprBps": 4800,
+      "homeRegion": "af-south-1",
+      "timezone": "Africa/Lagos",
+      "locale": "en-NG",
+      "primaryColor": "#0B6E4F",
+      "secondaryColor": "#F2A541",
+      "logo": "logos/eko-medicredit.png",
+      "logoSvg": "logos/eko-medicredit.svg"
+    },
+    {
+      "slug": "arewa-pharmafinance",
+      "legalName": "Arewa PharmaFinance Ltd",
+      "displayName": "Arewa PharmaFinance",
+      "city": "Kano",
+      "countryCode": "NG",
+      "currency": "NGN",
+      "lenderType": "FINANCE_COMPANY",
+      "maxAprBps": 4200,
+      "homeRegion": "af-south-1",
+      "timezone": "Africa/Lagos",
+      "locale": "en-NG",
+      "primaryColor": "#5B2A86",
+      "secondaryColor": "#D4A017",
+      "logo": "logos/arewa-pharmafinance.png",
+      "logoSvg": "logos/arewa-pharmafinance.svg"
+    },
+    {
+      "slug": "delta-carelend",
+      "legalName": "Delta CareLend Ltd",
+      "displayName": "Delta CareLend",
+      "city": "Port Harcourt",
+      "countryCode": "NG",
+      "currency": "NGN",
+      "lenderType": "MONEY_LENDER",
+      "maxAprBps": 3000,
+      "homeRegion": "af-south-1",
+      "timezone": "Africa/Lagos",
+      "locale": "en-NG",
+      "primaryColor": "#0E4C92",
+      "secondaryColor": "#0B7A75",
+      "logo": "logos/delta-carelend.png",
+      "logoSvg": "logos/delta-carelend.svg"
+    },
+    {
+      "slug": "teranga-sante",
+      "legalName": "Teranga Santé Finance SA",
+      "displayName": "Teranga Santé Finance",
+      "city": "Dakar",
+      "countryCode": "SN",
+      "currency": "XOF",
+      "lenderType": "MICROFINANCE_INSTITUTION",
+      "maxAprBps": 2400,
+      "homeRegion": "eu-west-3",
+      "timezone": "Africa/Dakar",
+      "locale": "fr-SN",
+      "primaryColor": "#A63D24",
+      "secondaryColor": "#1D4E89",
+      "logo": "logos/teranga-sante.png",
+      "logoSvg": "logos/teranga-sante.svg"
+    }
+  ]
+}

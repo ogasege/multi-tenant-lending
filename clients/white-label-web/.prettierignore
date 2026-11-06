@@ -1,0 +1,9 @@
+dist
+node_modules
+coverage
+playwright-report
+test-results
+screenshots
+demo-brands/logos/*.png
+package-lock.json
+demo-brands/demo-applicants.json

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 128" width="520" height="128" role="img" aria-label="Eko MediCredit">
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="#0B6E4F"/>
+  <path d="M40 44h44M40 64h34M40 84h44" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round"/>
+  <path d="M96 22v20M86 32h20" stroke="#F2A541" stroke-width="7" stroke-linecap="round"/>
+  <text x="144" y="70" font-family="Inter, Helvetica, Arial, sans-serif" font-size="44" font-weight="700" fill="#0B3D2C">Eko <tspan fill="#0B6E4F">MediCredit</tspan></text>
+  <text x="146" y="100" font-family="Inter, Helvetica, Arial, sans-serif" font-size="16" font-weight="600" letter-spacing="4" fill="#4B5563">MICROFINANCE BANK</text>
+</svg>

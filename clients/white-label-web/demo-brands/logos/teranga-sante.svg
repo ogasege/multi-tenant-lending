@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 128" width="600" height="128" role="img" aria-label="Teranga Santé Finance">
+  <circle cx="64" cy="64" r="56" fill="#A63D24"/>
+  <circle cx="64" cy="54" r="18" fill="#F6C177"/>
+  <path d="M22 84c14-8 28-8 42 0s28 8 42 0" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/>
+  <path d="M30 98c11-6 23-6 34 0s23 6 34 0" fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" opacity="0.8"/>
+  <text x="140" y="70" font-family="Inter, Helvetica, Arial, sans-serif" font-size="44" font-weight="700" fill="#5E2213">Teranga Santé</text>
+  <text x="142" y="102" font-family="Inter, Helvetica, Arial, sans-serif" font-size="18" font-weight="600" letter-spacing="6" fill="#1D4E89">FINANCE</text>
+</svg>
