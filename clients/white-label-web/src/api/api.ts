@@ -4,6 +4,8 @@
  *  - targets the tenant's home cell (base resolved from the directory),
  *  - adds `Authorization` from the in-memory session and refreshes once on 401,
  *  - sends `Idempotency-Key` when the caller passes one (the caller owns key reuse),
+ *  - never lets the browser follow a redirect (`redirect: 'manual'`): a 307/308 is resent
+ *    once, same method/body/Idempotency-Key, only to a cell the `redirects` policy allows,
  *  - turns RFC 9457 problem responses into `ApiError`,
  *  - records the exchange for the Developer view.
  */
@@ -56,11 +58,47 @@ export interface TokenStore {
   set(tokens: TokenPair | null): void;
 }
 
+/**
+ * What the client could learn about a 307/308. Browsers hide cross-origin (and, in
+ * `manual` mode, all) redirects behind an opaque response: then `opaque` is true and the
+ * other fields are null, and the policy has to find the home cell another way.
+ */
+export interface RedirectHint {
+  opaque: boolean;
+  /** `Location`, when readable. */
+  location: string | null;
+  /** `X-Tenant-Cell` or the problem body's `homeRegion`, when readable. */
+  region: string | null;
+}
+
+export type RedirectDecision = { base: string } | { refused: string };
+
+/** Picks the allow-listed cell a redirect may be resent to, or refuses it. */
+export type RedirectPolicy = (hint: RedirectHint) => Promise<RedirectDecision>;
+
 export interface ClientOptions {
   /** Base of the tenant's cell, e.g. `/cell/af-south-1` or `https://af-south-1.api…`. */
   base: () => string;
   tokens?: TokenStore;
   fetchImpl?: typeof fetch;
+  /** Without a policy every redirect is refused. */
+  redirects?: RedirectPolicy;
+}
+
+/** Client-side code for a redirect that was not followed (no API code collides with it). */
+export const CELL_ROUTING_REFUSED = 'CELL_ROUTING_REFUSED';
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+function redirectHint(res: Response, body: unknown): RedirectHint {
+  if (res.type === 'opaqueredirect') return { opaque: true, location: null, region: null };
+  const fromBody =
+    body !== null && typeof body === 'object' && 'homeRegion' in body ? body.homeRegion : null;
+  return {
+    opaque: false,
+    location: res.headers.get('location'),
+    region: res.headers.get('x-tenant-cell') ?? (typeof fromBody === 'string' ? fromBody : null),
+  };
 }
 
 interface RequestOptions {
@@ -104,8 +142,9 @@ export function createClient(opts: ClientOptions) {
     path: string,
     o: RequestOptions,
     retried: boolean,
+    hop: { base: string } | null = null,
   ): Promise<T> {
-    const base = opts.base();
+    const base = hop?.base ?? opts.base();
     const url = `${base}${path}${toQuery(o.query)}`;
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (o.body !== undefined) headers['Content-Type'] = 'application/json';
@@ -120,6 +159,8 @@ export function createClient(opts: ClientOptions) {
         method,
         headers,
         body: o.body === undefined ? undefined : JSON.stringify(o.body),
+        // The client, not the browser, decides whether a redirect target is trusted.
+        redirect: 'manual',
       });
     } catch (err) {
       const problem: Problem = {
@@ -127,14 +168,37 @@ export function createClient(opts: ClientOptions) {
         code: 'NETWORK_ERROR',
         detail: err instanceof Error ? err.message : String(err),
       };
-      record(method, path, url, base, 0, started, o, problem, new Headers(), null);
+      record(method, path, url, base, 0, started, o, problem, new Headers(), {});
       throw new ApiError(problem);
     }
     const body = await readBody(res);
-    const redirectedTo = res.redirected ? res.url : null;
-    record(method, path, url, base, res.status, started, o, body, res.headers, redirectedTo, () =>
-      send(method, path, o, true),
-    );
+
+    if (res.type === 'opaqueredirect' || REDIRECT_STATUSES.has(res.status)) {
+      const decision: RedirectDecision = hop
+        ? { refused: `${url} redirected again; only one cell hop is allowed` }
+        : opts.redirects
+          ? await opts.redirects(redirectHint(res, body))
+          : { refused: 'Redirects are not followed by this client' };
+      if ('base' in decision) {
+        record(method, path, url, base, res.status, started, o, body, res.headers, {
+          redirectedTo: `${decision.base}${path}`,
+        });
+        return send<T>(method, path, o, retried, decision);
+      }
+      record(method, path, url, base, res.status, started, o, body, res.headers, {
+        routingRefused: decision.refused,
+      });
+      throw new ApiError({
+        status: res.status,
+        code: CELL_ROUTING_REFUSED,
+        title: 'Cell routing refused',
+        detail: decision.refused,
+      });
+    }
+
+    record(method, path, url, base, res.status, started, o, body, res.headers, {
+      replay: () => send(method, path, o, true),
+    });
 
     if (res.ok) return body as T;
     const problem = toProblem(res.status, body);
@@ -154,9 +218,13 @@ export function createClient(opts: ClientOptions) {
     o: RequestOptions,
     responseBody: unknown,
     headers: Headers,
-    redirectedTo: string | null,
-    replay?: () => Promise<unknown>,
+    extra: {
+      redirectedTo?: string;
+      routingRefused?: string;
+      replay?: () => Promise<unknown>;
+    },
   ): void {
+    const { redirectedTo = null, routingRefused = null, replay } = extra;
     const responseHeaders: Record<string, string> = {};
     for (const name of SHOWN_HEADERS) {
       const v = headers.get(name);
@@ -168,9 +236,7 @@ export function createClient(opts: ClientOptions) {
       path,
       url,
       // The serving cell names itself in X-Tenant-Cell on every response.
-      cell:
-        headers.get('x-tenant-cell') ??
-        (redirectedTo ? cellLabel(new URL(redirectedTo).origin) : cellLabel(base)),
+      cell: headers.get('x-tenant-cell') ?? cellLabel(base),
       status,
       durationMs: Math.round(performance.now() - started),
       idempotencyKey: o.idempotencyKey ?? null,
@@ -178,6 +244,7 @@ export function createClient(opts: ClientOptions) {
       responseBody: redact(responseBody),
       responseHeaders,
       redirectedTo,
+      routingRefused,
       replay: o.idempotencyKey && replay ? replay : null,
     });
   }

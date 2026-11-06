@@ -116,9 +116,26 @@ locale: `₦500,000.00` (en-NG), `1 000 000 F CFA` (fr-SN). The logo is the pres
   (`X-Tenant-Cell`, on every response), timing,
   `Idempotency-Key`, `Idempotent-Replayed`, `RateLimit`/`RateLimit-Policy`, `X-Request-ID`,
   redirects, and redacted request/response bodies. Idempotent calls can be resent verbatim.
-- The Vite dev server proxies `/cell/af-south-1` → :3000 and `/cell/eu-west-3` → :3001
-  (same origin, no CORS preflight). For other deployments set `VITE_API_BASE` and
-  `VITE_CELL_MAP` to call the cells directly. The API exposes the headers above via CORS.
+- **Cell allow-list.** The client only talks to cells listed at build time in
+  `VITE_CELL_ORIGINS`, a JSON map region → origin (default: the local two-cell stack,
+  `{"af-south-1":"http://localhost:3000","eu-west-3":"http://localhost:3001"}`). Every origin
+  must be `https://`; `http://localhost` / `http://127.0.0.1` are accepted in dev builds only,
+  so a production build needs its own `VITE_CELL_ORIGINS` or it refuses to start. The
+  directory's `apiBaseUrl` can only select one of these cells: any other value is refused,
+  requests stay on the default cell (`VITE_DEFAULT_CELL`, else the first entry) and Developer
+  view shows the error. This keeps a poisoned directory entry from receiving credentials.
+- **Redirects are never followed by the browser.** Every call uses `redirect: 'manual'`.
+  A cell answers 307 for a tenant homed elsewhere; the client resends that request **once**
+  (same method, body and `Idempotency-Key`) only to an allow-listed cell, else it stops with
+  `CELL_ROUTING_REFUSED` and Developer view shows "Cell routing refused". Browsers return an
+  opaque redirect (status 0, no `Location`, headers or body) for `manual` fetches, so in the
+  browser the home cell comes from a fresh directory lookup on the default cell, checked
+  against the allow-list. Where the 307 is readable (tests, non-browser runtimes) the
+  `Location` origin decides, then `X-Tenant-Cell` / the problem body's `homeRegion`. A
+  foreign `Location` is refused outright, and a second redirect is never followed.
+- The Vite dev server proxies each allow-listed cell under `/cell/{region}` (same origin, no
+  CORS preflight); dev builds call those prefixes, production builds the origins directly
+  (override with `VITE_CELL_PROXY=true|false`). The API exposes the headers above via CORS.
 
 ## Demo brands
 

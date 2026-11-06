@@ -72,6 +72,35 @@ describe('new backend codes', () => {
   });
 });
 
+describe('checkout order codes', () => {
+  it.each([
+    [
+      'ORDER_AMOUNT_EXCEEDED',
+      'The amount is more than the order total.',
+      'Le montant dépasse le total de la commande.',
+    ],
+    [
+      'ORDER_NOT_FOR_APPLICANT',
+      'This order belongs to another buyer.',
+      'Cette commande appartient à un autre acheteur.',
+    ],
+    [
+      'ORDER_REFERENCE_NOT_ALLOWED',
+      'Order references apply only to checkout (supplier-paid) products.',
+      'Les références de commande ne s’appliquent qu’aux produits de financement d’achat (payés au fournisseur).',
+    ],
+    [
+      'ORDER_ALREADY_FINANCED',
+      'This order has already been financed.',
+      'Cette commande a déjà été financée.',
+    ],
+  ])('%s reads as a human sentence in English and French', (code, en, fr) => {
+    const err = new ApiError({ status: 422, code });
+    expect(describeError(err, 'en-NG')).toMatchObject({ code, message: en });
+    expect(describeError(err, 'fr-SN')).toMatchObject({ code, message: fr });
+  });
+});
+
 describe('reasonText', () => {
   it('explains scorecard reason codes', () => {
     expect(reasonText('R01_DTI_ABOVE_THRESHOLD', 'en-NG')).toMatch(/income/);

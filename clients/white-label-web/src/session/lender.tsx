@@ -12,8 +12,20 @@ import {
   type ReactNode,
 } from 'react';
 
-import { ApiError, createClient, type Api } from '../api/api';
-import { cellLabel, clientBaseFor, DEFAULT_CELL_BASE } from '../api/cells';
+import {
+  ApiError,
+  createClient,
+  type Api,
+  type RedirectDecision,
+  type RedirectHint,
+} from '../api/api';
+import {
+  resolveLocation,
+  resolveRegion,
+  type CellConfig,
+  type CellResolution,
+} from '../api/cellConfig';
+import { CELL_CONFIG, defaultCell, resolveCell } from '../api/cells';
 import type { Me, PublicBranding, TokenPair } from '../api/types';
 import { messagesFor, type Messages } from '../i18n/messages';
 import { applyBranding, type ThemeReport } from '../theme/branding';
@@ -31,44 +43,66 @@ type Sessions = Readonly<Record<Area, Session | null>>;
 export interface CellInfo {
   region: string;
   base: string;
-  source: 'directory' | 'default';
+  /**
+   * `rejected`: the directory named a host outside the allow-list; the default cell is used.
+   * `redirect`: a cell answered 307 and the client moved to the allow-listed home cell.
+   */
+  source: 'directory' | 'default' | 'rejected' | 'redirect';
+  /** Cell-routing problems (rejected directory entry or configuration), for Developer view. */
+  errors: readonly string[];
+}
+
+export interface LenderSnapshot {
+  sessions: Sessions;
+  /** Null until `boot` has picked a cell. */
+  cell: CellInfo | null;
 }
 
 /**
- * Mutable, framework-free holder of the tenant's cell base and the two sessions. The API
- * clients read it on every request; React subscribes to it for re-renders.
+ * Mutable, framework-free holder of the tenant's cell and the two sessions. The API clients
+ * read it on every request; React subscribes to it for re-renders.
  */
 export class LenderStore {
-  base = DEFAULT_CELL_BASE;
-  private sessions: Sessions = { customer: null, staff: null };
+  private slug = '';
+  private state: LenderSnapshot = { sessions: { customer: null, staff: null }, cell: null };
   private readonly listeners = new Set<() => void>();
   readonly api: Record<Area, Api>;
 
-  constructor() {
+  constructor(private readonly cells: CellConfig = CELL_CONFIG) {
     this.api = {
       customer: this.client('customer'),
       staff: this.client('staff'),
     };
   }
 
+  /** Empty until `boot` picks an allow-listed cell: no request can leave before that. */
+  get base(): string {
+    return this.state.cell?.base ?? '';
+  }
+
   private client(area: Area): Api {
     return createClient({
       base: () => this.base,
+      redirects: this.followRedirect,
       tokens: {
-        get: () => this.sessions[area]?.tokens ?? null,
+        get: () => this.state.sessions[area]?.tokens ?? null,
         set: (tokens) => {
-          const me = this.sessions[area]?.me ?? null;
+          const me = this.state.sessions[area]?.me ?? null;
           this.update(area, tokens ? { tokens, me } : null);
         },
       },
     });
   }
 
-  private update(area: Area, session: Session | null): void {
-    this.sessions = { ...this.sessions, [area]: session };
+  private set(next: Partial<LenderSnapshot>): void {
+    this.state = { ...this.state, ...next };
     this.listeners.forEach((l) => {
       l();
     });
+  }
+
+  private update(area: Area, session: Session | null): void {
+    this.set({ sessions: { ...this.state.sessions, [area]: session } });
   }
 
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -78,7 +112,7 @@ export class LenderStore {
     };
   };
 
-  readonly snapshot = (): Sessions => this.sessions;
+  readonly snapshot = (): LenderSnapshot => this.state;
 
   /** Stores the tokens, then asks the API who signed in (`GET /v1/me`). */
   readonly signIn = async (area: Area, tokens: TokenPair): Promise<void> => {
@@ -86,7 +120,7 @@ export class LenderStore {
     try {
       const me = await this.api[area].whoAmI();
       if (me.kind !== 'USER') throw new Error('A platform admin cannot use a lender site');
-      const current = this.sessions[area];
+      const current = this.state.sessions[area];
       if (current) this.update(area, { ...current, me });
     } catch (err) {
       this.update(area, null);
@@ -95,32 +129,71 @@ export class LenderStore {
   };
 
   readonly signOut = (area: Area): void => {
-    const current = this.sessions[area];
+    const current = this.state.sessions[area];
     if (current) void this.api[area].logout(current.tokens.refreshToken).catch(() => undefined);
     this.update(area, null);
   };
 
-  /** Directory lookup (home cell), then the tenant's public branding from that cell. */
-  async boot(slug: string): Promise<{ branding: PublicBranding; cell: CellInfo }> {
-    let cell: CellInfo = {
-      region: cellLabel(DEFAULT_CELL_BASE),
-      base: DEFAULT_CELL_BASE,
-      source: 'default',
-    };
+  /** Directory lookup on the default cell; never follows a redirect itself. */
+  private async lookUpHomeCell(): Promise<CellResolution | null> {
+    const fallback = defaultCell(this.cells);
     try {
-      const entry = await createClient({ base: () => DEFAULT_CELL_BASE }).directory(slug);
-      cell = {
-        region: entry.homeRegion,
-        base: clientBaseFor(entry.apiBaseUrl),
-        source: 'directory',
-      };
+      const entry = await createClient({ base: () => fallback.base }).directory(this.slug);
+      return resolveCell(entry.apiBaseUrl, this.cells);
     } catch {
-      // No directory entry: stay on the default cell, which serves the tenant or answers
-      // with a 307 to its home cell (followed by the browser, visible in Developer view).
+      return null;
     }
-    this.base = cell.base;
+  }
+
+  /**
+   * Redirect policy of both API clients (SPEC §4.1: a cell answers 307 for a tenant homed
+   * elsewhere). A readable redirect is followed only to an allow-listed origin (Location, else
+   * `X-Tenant-Cell` / `homeRegion`). Browsers hide redirects from `redirect: 'manual'`
+   * fetches (opaque response, no Location or headers), so the home cell then comes from a
+   * fresh directory lookup, again checked against the allow-list.
+   */
+  private readonly followRedirect = async (hint: RedirectHint): Promise<RedirectDecision> => {
+    const current = this.state.cell;
+    let target: CellResolution;
+    if (hint.location !== null) target = resolveLocation(hint.location, this.cells);
+    else if (hint.region !== null) target = resolveRegion(hint.region, this.cells);
+    else
+      target = (await this.lookUpHomeCell()) ?? {
+        ok: false,
+        reason: 'A cell redirected, and the directory could not name the home cell',
+      };
+    if (target.ok && target.base === current?.base) {
+      target = { ok: false, reason: `Cell ${target.region} redirected to itself` };
+    }
+    if (!current) return { refused: target.ok ? 'No cell selected yet' : target.reason };
+    if (!target.ok) {
+      this.set({ cell: { ...current, errors: [...current.errors, target.reason] } });
+      return { refused: target.reason };
+    }
+    this.set({
+      cell: { ...current, region: target.region, base: target.base, source: 'redirect' },
+    });
+    return { base: target.base };
+  };
+
+  /** Directory lookup (home cell), then the tenant's public branding from that cell. */
+  async boot(slug: string): Promise<{ branding: PublicBranding }> {
+    this.slug = slug;
+    const fallback = defaultCell(this.cells);
+    let cell: CellInfo = { ...fallback, source: 'default', errors: this.cells.errors };
+    const resolved = await this.lookUpHomeCell();
+    if (resolved?.ok) {
+      cell = { ...cell, region: resolved.region, base: resolved.base, source: 'directory' };
+    } else if (resolved) {
+      // Never follow a directory entry to an unknown host: credentials would go with it.
+      // The refusal is shown in Developer view.
+      cell = { ...cell, source: 'rejected', errors: [...cell.errors, resolved.reason] };
+    }
+    // No directory entry: stay on the default cell, which serves the tenant or answers with
+    // a 307 that `followRedirect` checks (visible in Developer view).
+    this.set({ cell });
     const branding = await this.api.customer.branding(slug);
-    return { branding, cell };
+    return { branding };
   }
 }
 
@@ -151,20 +224,29 @@ type LoadState =
   | { kind: 'loading' }
   | { kind: 'missing' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; branding: PublicBranding; theme: ThemeReport; cell: CellInfo };
+  | { kind: 'ready'; branding: PublicBranding; theme: ThemeReport };
 
 /** Mount with `key={slug}`: a different lender gets a fresh store and fresh sessions. */
-export function LenderProvider({ slug, children }: { slug: string; children: ReactNode }) {
-  const [store] = useState(() => new LenderStore());
+export function LenderProvider({
+  slug,
+  cells,
+  children,
+}: {
+  slug: string;
+  /** Cell allow-list; defaults to the build's `VITE_CELL_ORIGINS` (overridden in tests). */
+  cells?: CellConfig;
+  children: ReactNode;
+}) {
+  const [store] = useState(() => new LenderStore(cells));
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
-  const sessions = useSyncExternalStore(store.subscribe, store.snapshot);
+  const { sessions, cell } = useSyncExternalStore(store.subscribe, store.snapshot);
 
   useEffect(() => {
     const run = { cancelled: false };
     store.boot(slug).then(
-      ({ branding, cell }) => {
+      ({ branding }) => {
         if (run.cancelled) return;
-        setState({ kind: 'ready', branding, theme: applyBranding(branding), cell });
+        setState({ kind: 'ready', branding, theme: applyBranding(branding) });
       },
       (err: unknown) => {
         if (run.cancelled) return;
@@ -195,11 +277,12 @@ export function LenderProvider({ slug, children }: { slug: string; children: Rea
       </main>
     );
   }
-  if (state.kind === 'error') {
+  if (state.kind === 'error' || !cell) {
+    const message = state.kind === 'error' ? state.message : 'No API cell selected';
     return (
       <main className="boot">
         <h1>Cannot load this lender</h1>
-        <p>{state.message}</p>
+        <p>{message}</p>
       </main>
     );
   }
@@ -212,7 +295,7 @@ export function LenderProvider({ slug, children }: { slug: string; children: Rea
     locale,
     currency: state.branding.defaultCurrency,
     t: messagesFor(locale),
-    cell: state.cell,
+    cell,
     api: store.api,
     sessions,
     signIn: store.signIn,

@@ -53,7 +53,13 @@ function ExchangeRow({ x }: { x: Exchange }) {
         {x.redirectedTo && (
           <div>
             <dt>redirected</dt>
-            <dd>307 → {x.redirectedTo}</dd>
+            <dd>resent once → {x.redirectedTo}</dd>
+          </div>
+        )}
+        {x.routingRefused && (
+          <div className="dev-hl">
+            <dt>Cell routing refused</dt>
+            <dd>{x.routingRefused}</dd>
           </div>
         )}
       </dl>
@@ -108,6 +114,7 @@ export function DevView() {
         }}
       >
         Developer view {open ? '●' : '○'}
+        {lender.cell.errors.length > 0 && <span className="dev-toggle-alert"> · cell error</span>}
       </button>
       {open && (
         <aside className="dev-drawer" aria-label="Developer view">
@@ -151,6 +158,17 @@ export function DevView() {
               </button>
             </div>
           </div>
+          {lender.cell.errors.length > 0 && (
+            <div className="dev-alert" role="alert">
+              <strong>Cell routing refused</strong>
+              <ul>
+                {lender.cell.errors.map((e) => (
+                  <li key={e}>{e}</li>
+                ))}
+              </ul>
+              <p>Nothing was sent to those hosts; requests stay on {lender.cell.region}.</p>
+            </div>
+          )}
           {tab === 'calls' ? (
             <ol className="dev-list">
               {entries.map((x) => (

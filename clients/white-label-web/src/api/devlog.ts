@@ -17,8 +17,10 @@ export interface Exchange {
   responseBody: unknown;
   /** Headers worth showing: Idempotent-Replayed, RateLimit, X-Request-ID, X-Tenant-Cell… */
   responseHeaders: Record<string, string>;
-  /** The browser followed a redirect (e.g. the 307 to a tenant's home cell). */
+  /** The client resent this request to an allow-listed cell (e.g. a 307 to the home cell). */
   redirectedTo: string | null;
+  /** The client refused to follow this redirect, and why ("Cell routing refused"). */
+  routingRefused: string | null;
   /** Re-sends the exact request (same body, same Idempotency-Key). */
   replay: (() => Promise<unknown>) | null;
 }
