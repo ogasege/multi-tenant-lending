@@ -8,6 +8,7 @@ import {
 } from '@nestjs/swagger';
 
 import {
+  AnyTenantUser,
   CurrentTenantUser,
   RequirePermissions,
   type TenantUser,
@@ -34,13 +35,6 @@ import {
 } from './dto/branding.dto';
 import { InstitutionProfileDto } from './dto/institution-profile.dto';
 
-/**
- * Every permission in the catalogue is held by at least one tenant role, and every tenant
- * role holds `product:read`; it is therefore the "any authenticated tenant user" permission
- * for read-only institution data (the guard requires at least one permission per route).
- */
-const ANY_TENANT_USER = Permission.PRODUCT_READ;
-
 /** The caller's own institution: profile (read-only) and white-label branding. */
 @ApiTags('Institution')
 @ApiBearerAuth()
@@ -55,7 +49,7 @@ export class InstitutionController {
   ) {}
 
   @Get()
-  @RequirePermissions(ANY_TENANT_USER)
+  @AnyTenantUser()
   @ApiOperation({ summary: 'Get the caller’s institution profile (read-only)' })
   @ApiOkResponse({ type: InstitutionProfileDto })
   profile(): Promise<InstitutionProfileView> {
@@ -63,7 +57,7 @@ export class InstitutionController {
   }
 
   @Get('branding')
-  @RequirePermissions(ANY_TENANT_USER)
+  @AnyTenantUser()
   @ApiOperation({ summary: 'Get the caller’s branding (includes `version` for updates)' })
   @ApiOkResponse({ type: BrandingDto })
   branding(): Promise<BrandingView> {

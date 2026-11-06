@@ -57,10 +57,16 @@ describe('projectionConflict', () => {
 });
 
 describe('ProjectionConflictReporter', () => {
-  function reporter(current: DirectoryEntry | undefined) {
+  const ORIGIN = 'https://af-south-1.api.example.com';
+
+  function reporter() {
     const lookup = {
       invalidate: vi.fn(() => Promise.resolve()),
-      find: vi.fn(() => Promise.resolve(current)),
+      find: vi.fn(),
+      // The real checks, reduced to the origin rule: only the configured origin is trusted.
+      sanitise: vi.fn((e: DirectoryEntry | undefined) =>
+        e?.apiBaseUrl === ORIGIN ? e : undefined,
+      ),
     };
     const config = { CELL_REGION: 'af-south-1' } as Env;
     return {
@@ -69,18 +75,24 @@ describe('ProjectionConflictReporter', () => {
     };
   }
 
+  beforeEach(() => {
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('re-reads the entry past the cache and logs a conflict with the context', async () => {
-    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-    const { lookup, reporter: r } = reporter(entry({ institutionId: 'inst-2' }));
+  it('judges the row the failed write returned and logs a conflict with the context', async () => {
+    const { lookup, reporter: r } = reporter();
+    const current = entry({ institutionId: 'inst-2' });
 
-    await r.reportIfConflicting('eko-medicredit', 'inst-1', { eventId: 'evt-1' });
+    await r.reportIfConflicting('eko-medicredit', 'inst-1', current, { eventId: 'evt-1' });
 
-    expect(lookup.invalidate).toHaveBeenCalledWith('eko-medicredit');
-    expect(warn).toHaveBeenCalledExactlyOnceWith({
+    expect(lookup.sanitise).toHaveBeenCalledWith(current);
+    expect(lookup.find).not.toHaveBeenCalled();
+    expect(lookup.invalidate).toHaveBeenCalledExactlyOnceWith('eko-medicredit');
+    expect(Logger.prototype.warn).toHaveBeenCalledExactlyOnceWith({
       msg: 'directory.projection_conflict',
       event: 'directory.projection_conflict',
       eventId: 'evt-1',
@@ -92,9 +104,23 @@ describe('ProjectionConflictReporter', () => {
     });
   });
 
-  it('stays quiet when the row is ours', async () => {
-    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-    await reporter(entry()).reporter.reportIfConflicting('eko-medicredit', 'inst-1');
-    expect(warn).not.toHaveBeenCalled();
+  it('stays quiet and keeps the cache when the row is ours (a replay)', async () => {
+    const { lookup, reporter: r } = reporter();
+    await r.reportIfConflicting('eko-medicredit', 'inst-1', entry());
+    expect(Logger.prototype.warn).not.toHaveBeenCalled();
+    expect(lookup.invalidate).not.toHaveBeenCalled();
+    expect(lookup.find).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, DirectoryEntry | undefined]>([
+    ['a PENDING reservation (unreadable as an entry)', undefined],
+    ['a row lookups do not trust', entry({ apiBaseUrl: 'https://evil.example.com' })],
+  ])('treats %s as a conflict', async (_case, current) => {
+    const { lookup, reporter: r } = reporter();
+    await r.reportIfConflicting('eko-medicredit', 'inst-1', current);
+    expect(lookup.invalidate).toHaveBeenCalledWith('eko-medicredit');
+    expect(Logger.prototype.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerInstitutionId: null, ownerHomeRegion: null }),
+    );
   });
 });

@@ -208,7 +208,8 @@ describe('Platform administration', () => {
         version: 1,
         updatedAt: new Date().toISOString(),
       };
-      await expect(directory.upsert(owner)).resolves.toBe('applied');
+      await expect(directory.upsert(owner)).resolves.toEqual({ result: 'applied' });
+      // The failed conditional write returns the blocking row (ALL_OLD), unmarshalled.
       await expect(
         directory.upsert({
           ...owner,
@@ -217,13 +218,13 @@ describe('Platform administration', () => {
           apiBaseUrl: 'http://cell-af-south-1.test',
           version: 999,
         }),
-      ).resolves.toBe('stale');
+      ).resolves.toEqual({ result: 'stale', current: owner });
       await expect(
         directory.upsert({ ...owner, institutionId: randomUUID(), version: 2 }),
-      ).resolves.toBe('stale');
-      await expect(directory.upsert({ ...owner, status: 'SUSPENDED', version: 2 })).resolves.toBe(
-        'applied',
-      );
+      ).resolves.toEqual({ result: 'stale', current: owner });
+      await expect(
+        directory.upsert({ ...owner, status: 'SUSPENDED', version: 2 }),
+      ).resolves.toEqual({ result: 'applied' });
       await expect(directory.get(slug)).resolves.toMatchObject({
         institutionId: owner.institutionId,
         status: 'SUSPENDED',
@@ -236,6 +237,18 @@ describe('Platform administration', () => {
       const directory = t.app.get<TenantDirectory>(TENANT_DIRECTORY);
       // Not projected yet (no worker in this test): only a PENDING reservation exists.
       await expect(directory.get(body.slug)).resolves.toBeUndefined();
+      // A projection blocked by a reservation reports no readable owner (⇒ a conflict).
+      await expect(
+        directory.upsert({
+          slug: body.slug,
+          institutionId: randomUUID(),
+          homeRegion: 'eu-west-3',
+          apiBaseUrl: 'http://cell-b.test',
+          status: 'ACTIVE',
+          version: 1,
+          updatedAt: new Date().toISOString(),
+        }),
+      ).resolves.toEqual({ result: 'stale' });
       await request(t.http).get(`/v1/directory/institutions/${body.slug}`).expect(404);
     });
 

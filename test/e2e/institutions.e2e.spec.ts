@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { Redis } from 'ioredis';
 import request from 'supertest';
+import { inject } from 'vitest';
 
 import { AwsModule } from '@/common/aws/aws.module';
 import { TransactionRunner } from '@/common/database/transaction-runner';
@@ -69,8 +70,10 @@ describe('Institution profile & white-label branding', () => {
     b = await createTestTenant(t.app, { currency: 'XOF', lenderType: 'MICROFINANCE_INSTITUTION' });
   });
 
+  const extraApps: TestApp[] = [];
+
   afterAll(async () => {
-    await t.close();
+    await Promise.all([t.close(), ...extraApps.map((app) => app.close())]);
   });
 
   describe('GET /v1/institution', () => {
@@ -196,6 +199,44 @@ describe('Institution profile & white-label branding', () => {
       expect(Buffer.from(await download.arrayBuffer()).equals(PNG)).toBe(true);
     });
 
+    it('signs browser-facing URLs for S3_PUBLIC_ENDPOINT_URL; server calls stay internal', async () => {
+      const internal = inject('env').AWS_ENDPOINT_URL ?? '';
+      const publicEndpoint = 'http://s3.browser.test:4566';
+      // Closed in afterAll: closing a Nest app resets nestjs-cls process-wide.
+      const cell = await createTestApp([AwsModule, InstitutionsModule], {
+        S3_PUBLIC_ENDPOINT_URL: publicEndpoint,
+      });
+      extraApps.push(cell);
+      const tenant = await createTestTenant(cell.app);
+      const form = (
+        await request(cell.http)
+          .post('/v1/institution/branding/logo-upload-url')
+          .set(auth(tenant.tokens.INSTITUTION_ADMIN))
+          .send({ contentType: 'image/png' })
+          .expect(201)
+      ).body as UploadForm;
+      expect(form.url.startsWith(`${publicEndpoint}/`)).toBe(true);
+
+      // The POST policy is not bound to the host: upload through the reachable endpoint.
+      const upload = await postToS3(
+        { ...form, url: form.url.replace(publicEndpoint, internal) },
+        PNG,
+        'image/png',
+      );
+      expect(upload.status).toBe(204);
+
+      // Attaching the logo HEADs the object through the internal client, then presigns
+      // the GET for the public host.
+      const res = await request(cell.http)
+        .put('/v1/institution/branding')
+        .set(auth(tenant.tokens.INSTITUTION_ADMIN))
+        .send(brandingBody({ logoObjectKey: form.objectKey }))
+        .expect(200);
+      expect((res.body as { logoUrl: string }).logoUrl.startsWith(`${publicEndpoint}/`)).toBe(true);
+      const pub = await request(cell.http).get(`/v1/institutions/${tenant.slug}/branding`);
+      expect((pub.body as { logoUrl: string }).logoUrl.startsWith(`${publicEndpoint}/`)).toBe(true);
+    });
+
     it('rejects a file larger than 1 MiB', async () => {
       const form = (await uploadForm(a).expect(201)).body as UploadForm;
       const upload = await postToS3(form, Buffer.alloc(1024 * 1024 + 1, 1), 'image/png');
@@ -236,6 +277,8 @@ describe('Institution profile & white-label branding', () => {
         primaryColor: '#0B5FFF',
         secondaryColor: '#111827',
         locale: 'en-NG',
+        defaultCurrency: 'XOF',
+        supportedCurrencies: ['XOF'],
         supportEmail: null,
         supportPhone: null,
         websiteUrl: null,
@@ -268,7 +311,7 @@ describe('Institution profile & white-label branding', () => {
     it('serves from the Redis cache and invalidates it when branding changes', async () => {
       const tenant = await createTestTenant(t.app);
       const redis = t.app.get<Redis>(REDIS);
-      const cacheKey = `branding:public:v1:${tenant.slug}`;
+      const cacheKey = `branding:public:v2:${tenant.slug}`;
 
       await publicBranding(tenant.slug).expect(200);
       expect(await redis.ttl(cacheKey)).toBeGreaterThan(0);

@@ -19,6 +19,17 @@ export const ErrorCode = {
   APPLICATION_EXPIRED: 'APPLICATION_EXPIRED',
   APR_EXCEEDS_CAP: 'APR_EXCEEDS_CAP',
   REPAYMENT_EXCEEDS_PAYOFF: 'REPAYMENT_EXCEEDS_PAYOFF',
+  /**
+   * A repayment value date outside [max(disbursement, latest repayment, today − backdate
+   * window), business today].
+   */
+  VALUE_DATE_OUT_OF_RANGE: 'VALUE_DATE_OUT_OF_RANGE',
+  /** A statement-backed repayment channel (anything but CASH) without its reference. */
+  EXTERNAL_REFERENCE_REQUIRED: 'EXTERNAL_REFERENCE_REQUIRED',
+  /** The payee is not one the principal may direct the disbursement to. */
+  PAYEE_NOT_ALLOWED: 'PAYEE_NOT_ALLOWED',
+  /** The checkout order reference is unknown to the procurement platform. */
+  CHECKOUT_ORDER_NOT_FOUND: 'CHECKOUT_ORDER_NOT_FOUND',
   IDEMPOTENCY_KEY_REQUIRED: 'IDEMPOTENCY_KEY_REQUIRED',
   IDEMPOTENCY_KEY_REUSED: 'IDEMPOTENCY_KEY_REUSED',
   UNSAFE_WEBHOOK_URL: 'UNSAFE_WEBHOOK_URL',

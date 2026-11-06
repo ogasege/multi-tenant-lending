@@ -8,7 +8,7 @@ import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Inject, Injectable } from '@nestjs/common';
 
-import { S3_CLIENT } from '../../../common/aws/aws.module';
+import { S3_CLIENT, S3_PRESIGN_CLIENT } from '../../../common/aws/aws.module';
 import { APP_CONFIG } from '../../../config/config.module';
 import type { Env } from '../../../config/env.schema';
 import {
@@ -32,6 +32,9 @@ export interface StoredObject {
  * S3 adapter for tenant brand assets. Browsers upload straight to S3 with a presigned POST
  * (the API never proxies file bytes) and read logos through short-lived presigned GET URLs,
  * so the bucket itself stays private (Block Public Access).
+ *
+ * Presigned URLs are signed with the browser-facing client ({@link S3_PRESIGN_CLIENT},
+ * `S3_PUBLIC_ENDPOINT_URL` locally); `head` talks to S3 through the server-side client.
  */
 @Injectable()
 export class BrandingAssets {
@@ -39,6 +42,7 @@ export class BrandingAssets {
 
   constructor(
     @Inject(S3_CLIENT) private readonly s3: S3Client,
+    @Inject(S3_PRESIGN_CLIENT) private readonly presigner: S3Client,
     @Inject(APP_CONFIG) config: Env,
   ) {
     this.bucket = config.S3_BRANDING_BUCKET;
@@ -50,7 +54,7 @@ export class BrandingAssets {
    * limits hold even though the API never sees the file.
    */
   presignUpload(key: string, contentType: LogoContentType): Promise<PresignedUpload> {
-    return createPresignedPost(this.s3, {
+    return createPresignedPost(this.presigner, {
       Bucket: this.bucket,
       Key: key,
       Conditions: [
@@ -64,7 +68,7 @@ export class BrandingAssets {
 
   /** Short-lived download URL for a private object (signing is local; no network call). */
   presignDownload(key: string): Promise<string> {
-    return getSignedUrl(this.s3, new GetObjectCommand({ Bucket: this.bucket, Key: key }), {
+    return getSignedUrl(this.presigner, new GetObjectCommand({ Bucket: this.bucket, Key: key }), {
       expiresIn: LOGO_URL_TTL_SECONDS,
     });
   }

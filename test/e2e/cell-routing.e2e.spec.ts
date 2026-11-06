@@ -142,6 +142,7 @@ describe('Global control plane: tenant directory and cell routing', () => {
         .get(`/v1/institutions/${tenant.slug}/branding`)
         .expect(200);
       expect(branding.headers.location).toBeUndefined();
+      expect(branding.headers['x-tenant-cell']).toBe('af-south-1');
       const signIn = await request(a.http).post('/v1/auth/login').send(login(tenant.slug));
       expect(signIn.status).toBe(401);
       expect(signIn.headers.location).toBeUndefined();
@@ -151,7 +152,8 @@ describe('Global control plane: tenant directory and cell routing', () => {
       const signIn = await request(b.http).post('/v1/auth/login').send(login('no-such-lender'));
       expect(signIn.status).toBe(401);
       expect(signIn.headers.location).toBeUndefined();
-      expect(signIn.headers['x-tenant-cell']).toBeUndefined();
+      // Only the serving cell's own region, never the (non-existent) tenant's.
+      expect(signIn.headers['x-tenant-cell']).toBe('eu-west-3');
       const branding = await request(b.http)
         .get('/v1/institutions/no-such-lender/branding')
         .expect(404);
@@ -231,15 +233,22 @@ describe('Global control plane: tenant directory and cell routing', () => {
 
       // The worker's per-event consumer; redelivery and an older replay are no-ops.
       const projector = a.app.get(DirectoryProjector);
-      await expect(projector.project(event)).resolves.toBe('applied');
-      await expect(projector.project(event)).resolves.toBe('stale');
+      await expect(projector.project(event)).resolves.toEqual({
+        result: 'applied',
+        slug: tenant.slug,
+      });
+      // The stale write hands back the row that blocked it: ours, at this version.
+      await expect(projector.project(event)).resolves.toMatchObject({
+        result: 'stale',
+        current: { institutionId: tenant.tenantId, status: 'SUSPENDED', version: event.version },
+      });
       await expect(
         projector.project({
           type: 'institution.registered',
           version: event.version - 1,
           payload: { institutionId: tenant.tenantId, slug: tenant.slug },
         }),
-      ).resolves.toBe('stale');
+      ).resolves.toMatchObject({ result: 'stale' });
       await expect(a.app.get(DirectoryReconciler).projectPendingInstitutions()).resolves.toEqual(
         expect.objectContaining({ applied: 0 }),
       );

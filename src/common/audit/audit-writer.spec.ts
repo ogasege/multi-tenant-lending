@@ -57,6 +57,26 @@ describe('audit sanitisation', () => {
   });
 });
 
+describe('audit masking of nested payee accounts', () => {
+  it('masks `account`, `iban` and `accountNo` wherever they are nested', () => {
+    expect(
+      sanitiseForAudit({
+        payee: { type: 'VENDOR', name: 'Emzor', account: '2033445566' },
+        loan: { payee: { account: 'SN012010100000123456' } },
+        IBAN: 'GB33BUKB20201555555555',
+        account_no: '0011223344',
+        'Account-No': ['9988776655'],
+      }),
+    ).toEqual({
+      payee: { type: 'VENDOR', name: 'Emzor', account: '****5566' },
+      loan: { payee: { account: '****3456' } },
+      IBAN: '****5555',
+      account_no: '****3344',
+      'Account-No': ['****6655'],
+    });
+  });
+});
+
 describe('audit hash chain', () => {
   it('is deterministic and order-independent for object keys', () => {
     expect(hashEntry(GENESIS_HASH, entry)).toBe(

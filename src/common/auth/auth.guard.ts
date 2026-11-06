@@ -21,19 +21,31 @@ import { ErrorCode } from '../errors/error-codes';
 
 import { AccessRevocations } from './access-revocations';
 import { CELL_LOCATOR, type CellLocator } from './cell-locator';
-import { IS_PUBLIC, PLATFORM_ONLY, REQUIRED_PERMISSIONS } from './decorators';
+import {
+  ANY_TENANT_USER,
+  type AnyTenantUserOptions,
+  IS_PUBLIC,
+  PLATFORM_ONLY,
+  REQUIRED_PERMISSIONS,
+} from './decorators';
 import { Permission, roleHas } from './permissions';
 import { TokenService, type VerifiedAccessToken } from './token.service';
 
 /**
- * Permissions that move money or commit credit. When the revocation store is unreachable,
- * routes requiring any of them fail CLOSED (503): a demoted or suspended user must never
- * disburse, record a repayment or decide an application on a stale token.
+ * Read-only permissions. When the revocation store (Redis) is unreachable, a route fails
+ * OPEN (served, with a warning) only if EVERY permission it requires is in this list, or it
+ * is an `@AnyTenantUser()` route requiring none. Every other route fails CLOSED (503): a
+ * revoked or demoted user must never keep a write capability (money movement, credit
+ * decisions, user/institution/product management, operations) on a stale token. A new
+ * permission is therefore fail-closed until it is deliberately added here.
  */
-export const FAIL_CLOSED_PERMISSIONS: readonly Permission[] = [
-  Permission.LOAN_DISBURSE,
-  Permission.REPAYMENT_CREATE,
-  Permission.APPLICATION_DECIDE,
+export const READ_ONLY_FAIL_OPEN_PERMISSIONS: readonly Permission[] = [
+  Permission.PRODUCT_READ,
+  Permission.CUSTOMER_READ,
+  Permission.APPLICATION_READ,
+  Permission.LOAN_READ,
+  Permission.LEDGER_READ,
+  Permission.AUDIT_READ,
 ];
 
 /**
@@ -42,12 +54,15 @@ export const FAIL_CLOSED_PERMISSIONS: readonly Permission[] = [
  *  2. otherwise a valid Bearer access token is required — it sets the principal and the tenant
  *     context (from the signed `tid` claim) for the rest of the request;
  *  3. `@PlatformAdminOnly()` routes need a platform token; every other route needs a tenant
- *     token AND every permission listed in `@RequirePermissions()`;
+ *     token AND every permission listed in `@RequirePermissions()`. `@AnyTenantUser()` is
+ *     the explicit opt-in for routes any tenant user may call (optionally platform admins
+ *     too); it still needs a valid token and the revocation check;
  *  4. tenant tokens are checked against `AccessRevocations` (role change, disable,
- *     suspension take effect immediately). If Redis is unavailable the check fails closed on
- *     money-moving routes ({@link FAIL_CLOSED_PERMISSIONS}) and open, with a warning, elsewhere.
- * A tenant route without `@RequirePermissions()` is rejected, so forgetting the decorator fails
- * closed instead of open.
+ *     suspension take effect immediately). If Redis is unavailable the check fails open, with
+ *     a warning, only for read-only routes ({@link READ_ONLY_FAIL_OPEN_PERMISSIONS} and
+ *     `@AnyTenantUser()` routes) and closed (503) for everything else.
+ * A tenant route with neither `@RequirePermissions()` nor `@AnyTenantUser()` is rejected, so
+ * forgetting the decorator fails closed instead of open.
  * A token issued by another cell fails with 421 Misdirected Request, enriched with that
  * cell's API base URL when a `CellLocator` (the tenant directory) is registered.
  */
@@ -86,16 +101,19 @@ export class AuthGuard implements CanActivate {
       return true;
     }
 
+    const anyTenantUser = this.reflector.getAllAndOverride<
+      Required<AnyTenantUserOptions> | undefined
+    >(ANY_TENANT_USER, targets);
+    if (principal.kind === 'PLATFORM_ADMIN' && anyTenantUser?.allowPlatformAdmin) return true;
+
     if (principal.kind !== 'USER') throw new ForbiddenError();
     this.cls.set('tenantId', principal.tenantId);
 
-    const required = this.reflector.getAllAndOverride<Permission[] | undefined>(
-      REQUIRED_PERMISSIONS,
-      targets,
-    );
-    if (!required?.length || !required.every((p) => roleHas(principal.role, p))) {
-      throw new ForbiddenError();
-    }
+    const required =
+      this.reflector.getAllAndOverride<Permission[] | undefined>(REQUIRED_PERMISSIONS, targets) ??
+      [];
+    if (required.length === 0 && !anyTenantUser) throw new ForbiddenError();
+    if (!required.every((p) => roleHas(principal.role, p))) throw new ForbiddenError();
 
     await this.assertNotRevoked(principal.id, principal.tenantId, verified.issuedAtMs, required);
     return true;
@@ -111,16 +129,17 @@ export class AuthGuard implements CanActivate {
     try {
       state = await this.revocations.check(principalId, tenantId, issuedAtMs);
     } catch (err) {
-      if (required.some((p) => FAIL_CLOSED_PERMISSIONS.includes(p))) {
-        this.logger.error(`Revocation check unavailable; failing closed: ${String(err)}`);
-        throw new AppError(
-          503,
-          ErrorCode.UPSTREAM_UNAVAILABLE,
-          'Authorisation could not be verified; retry shortly',
-        );
+      // `required` is empty only on `@AnyTenantUser()` routes (checked by the caller).
+      if (required.every((p) => READ_ONLY_FAIL_OPEN_PERMISSIONS.includes(p))) {
+        this.logger.warn(`Revocation check unavailable; failing open (read-only): ${String(err)}`);
+        return;
       }
-      this.logger.warn(`Revocation check unavailable; failing open: ${String(err)}`);
-      return;
+      this.logger.error(`Revocation check unavailable; failing closed: ${String(err)}`);
+      throw new AppError(
+        503,
+        ErrorCode.UPSTREAM_UNAVAILABLE,
+        'Authorisation could not be verified; retry shortly',
+      );
     }
     if (state === 'revoked') throw new UnauthenticatedError();
     if (state === 'suspended') {

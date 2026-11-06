@@ -1,4 +1,4 @@
-import type { DirectoryStatus } from '../domain/directory-entry';
+import type { DirectoryEntry, DirectoryStatus } from '../domain/directory-entry';
 
 import type { DirectoryProjector } from './directory-projector';
 
@@ -11,8 +11,14 @@ export interface InstitutionSnapshot {
   version: number;
 }
 
-/** Called for every institution whose projection came back `stale`. */
-export type StaleListener = (institution: InstitutionSnapshot) => Promise<void>;
+/**
+ * Called for every institution whose projection came back `stale`, with the directory row
+ * that blocked the write (unvalidated; `undefined` when unreadable, e.g. a reservation).
+ */
+export type StaleListener = (
+  institution: InstitutionSnapshot,
+  current: DirectoryEntry | undefined,
+) => Promise<void>;
 
 /** Pages through this cell's institutions in slug order (keyset pagination). */
 export interface InstitutionSnapshots {
@@ -46,7 +52,7 @@ export async function projectPendingInstitutions(
   for (;;) {
     const page = await source.page(after, PAGE_SIZE);
     for (const institution of page) {
-      const result = await projector.project({
+      const outcome = await projector.project({
         type: 'institution.status_changed',
         version: institution.version,
         payload: {
@@ -55,10 +61,10 @@ export async function projectPendingInstitutions(
           status: institution.status,
         },
       });
-      if (result === 'applied') summary.applied += 1;
-      else if (result === 'stale') {
+      if (outcome.result === 'applied') summary.applied += 1;
+      else if (outcome.result === 'stale') {
         summary.stale += 1;
-        await onStale?.(institution);
+        await onStale?.(institution, outcome.current);
       }
     }
     if (page.length < PAGE_SIZE) return summary;

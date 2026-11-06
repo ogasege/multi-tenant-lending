@@ -45,7 +45,16 @@ const REDACTED = new Set([
   'nin',
   'dateofbirth',
 ]);
-const MASKED = new Set(['payeeaccount', 'accountnumber', 'email', 'phone']);
+// Account numbers under any common key, nested anywhere (e.g. `payee.account`, `iban`).
+const MASKED = new Set([
+  'payeeaccount',
+  'account',
+  'accountnumber',
+  'accountno',
+  'iban',
+  'email',
+  'phone',
+]);
 
 const normalise = (key: string): string => key.toLowerCase().replace(/[_-]/g, '');
 

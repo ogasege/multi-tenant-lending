@@ -122,6 +122,12 @@ export class PublicBrandingDto {
   @ApiProperty() primaryColor!: string;
   @ApiProperty() secondaryColor!: string;
   @ApiProperty() locale!: string;
+  @ApiProperty({ example: 'NGN', description: 'ISO 4217 code amounts default to' })
+  defaultCurrency!: string;
+
+  @ApiProperty({ type: [String], example: ['NGN'], description: 'ISO 4217 codes offered' })
+  supportedCurrencies!: string[];
+
   @ApiProperty({ type: String, nullable: true }) supportEmail!: string | null;
   @ApiProperty({ type: String, nullable: true }) supportPhone!: string | null;
   @ApiProperty({ type: String, nullable: true }) websiteUrl!: string | null;

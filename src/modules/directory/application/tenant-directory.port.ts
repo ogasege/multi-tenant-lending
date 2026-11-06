@@ -1,7 +1,12 @@
 import type { CellEndpoint, DirectoryEntry } from '../domain/directory-entry';
 
-/** Result of a conditional directory write. */
-export type UpsertResult = 'applied' | 'stale';
+/**
+ * Result of a conditional directory write. On `stale`, `current` is the row that failed the
+ * condition (returned by the failed write itself, no extra read), as read by the adapter;
+ * `undefined` when it is not a readable tenant entry (e.g. a `PENDING` reservation). It is
+ * UNVALIDATED: run it through `DirectoryLookup.sanitise()` before trusting any field.
+ */
+export type UpsertResult = { result: 'applied' } | { result: 'stale'; current?: DirectoryEntry };
 
 /** A cell's claim on a slug while that institution's registration is in flight. */
 export interface SlugReservation {
@@ -24,7 +29,8 @@ export interface TenantDirectory {
    * Writes `entry` only if no row exists for its slug, or the stored row belongs to the SAME
    * institution in the SAME home region and has a LOWER `version`. Returns `stale` (and
    * changes nothing) for duplicates, out-of-order events and slugs owned by anyone else — a
-   * cell can never take over another cell's (or another institution's) slug.
+   * cell can never take over another cell's (or another institution's) slug — together with
+   * the row that blocked the write.
    */
   upsert(entry: DirectoryEntry): Promise<UpsertResult>;
 

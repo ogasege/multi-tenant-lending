@@ -86,8 +86,10 @@ describe('HTTP guarantees (auth, idempotency, validation, errors)', () => {
     }).accessToken;
   });
 
+  const extraApps: TestApp[] = [];
+
   afterAll(async () => {
-    await t.close();
+    await Promise.all([t.close(), ...extraApps.map((app) => app.close())]);
   });
 
   const charge = (body: unknown, key?: string, token = financeToken) => {
@@ -119,6 +121,27 @@ describe('HTTP guarantees (auth, idempotency, validation, errors)', () => {
         .get('/v1/probe/no-permissions-declared')
         .set('Authorization', `Bearer ${financeToken}`)
         .expect(403);
+    });
+  });
+
+  describe('serving cell header', () => {
+    it('names the serving cell on every response, errors included', async () => {
+      const region = process.env.CELL_REGION ?? process.env.AWS_REGION ?? 'af-south-1';
+      const denied = await request(t.http).post('/v1/probe/charge').send({}).expect(401);
+      expect(denied.headers['x-tenant-cell']).toBe(region);
+      const ok = await charge({ amount: 2 }, randomUUID()).expect(201);
+      expect(ok.headers['x-tenant-cell']).toBe(region);
+    });
+
+    it('exposes it to browsers through CORS', async () => {
+      // Closed in afterAll: closing a Nest app resets nestjs-cls process-wide.
+      extraApps.push(await createTestApp([], { CORS_ORIGINS: 'http://demo.test' }));
+      const res = await request(extraApps[0]!.http)
+        .get('/v1/no-such-route')
+        .set('Origin', 'http://demo.test')
+        .expect(404);
+      expect(res.headers['access-control-allow-origin']).toBe('http://demo.test');
+      expect(res.headers['access-control-expose-headers']).toContain('X-Tenant-Cell');
     });
   });
 

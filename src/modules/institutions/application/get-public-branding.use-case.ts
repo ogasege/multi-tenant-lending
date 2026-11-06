@@ -12,7 +12,9 @@ import { InstitutionsRepository } from '../infrastructure/institutions.repositor
  * Public white-label configuration for a front end, looked up by institution slug.
  *
  * Unknown, malformed and SUSPENDED slugs all yield the same 404, so the endpoint is not an
- * oracle for which institutions exist. The response never contains the tenant id.
+ * oracle for which institutions exist. The response never contains the tenant id; besides
+ * the look it carries only the institution's currencies, which a front end needs to format
+ * money and which every quote already discloses.
  * Cache-aside in Redis for 60 s; `UpdateBranding` invalidates the entry.
  */
 @Injectable()
@@ -34,8 +36,12 @@ export class GetPublicBranding {
     const institution = await this.resolver.institutionBySlug(slug);
     if (institution?.status !== 'ACTIVE') throw new NotFoundError('Institution');
 
-    const row = await this.runner.runForTenant(institution.id, (tx) => this.repo.findBranding(tx));
-    if (!row) throw new NotFoundError('Institution');
+    const found = await this.runner.runForTenant(institution.id, async (tx) => ({
+      row: await this.repo.findBranding(tx),
+      profile: await this.repo.findInstitution(tx),
+    }));
+    const { row, profile } = found;
+    if (!row || !profile) throw new NotFoundError('Institution');
 
     const branding: PublicBranding = {
       slug,
@@ -43,6 +49,8 @@ export class GetPublicBranding {
       primaryColor: row.primary_color,
       secondaryColor: row.secondary_color,
       locale: row.locale,
+      defaultCurrency: profile.default_currency,
+      supportedCurrencies: profile.supported_currencies,
       supportEmail: row.support_email,
       supportPhone: row.support_phone,
       websiteUrl: row.website_url,

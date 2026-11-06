@@ -5,6 +5,7 @@ import {
   GetCommand,
   PutCommand,
 } from '@aws-sdk/lib-dynamodb';
+import { unmarshall } from '@aws-sdk/util-dynamodb';
 
 import type {
   ReserveResult,
@@ -68,11 +69,17 @@ export class DynamoDbTenantDirectory implements TenantDirectory {
             ':region': entry.homeRegion,
             ':id': entry.institutionId,
           },
+          // The blocking row comes back with the failure: no GetItem to find out whose it is.
+          ReturnValuesOnConditionCheckFailure: 'ALL_OLD',
         }),
       );
-      return 'applied';
+      return { result: 'applied' };
     } catch (err) {
-      if (err instanceof ConditionalCheckFailedException) return 'stale';
+      if (err instanceof ConditionalCheckFailedException) {
+        // The document client does not unmarshall error payloads: `Item` is raw AttributeValues.
+        const current = err.Item ? toEntry(unmarshall(err.Item)) : undefined;
+        return current ? { result: 'stale', current } : { result: 'stale' };
+      }
       throw err;
     }
   }

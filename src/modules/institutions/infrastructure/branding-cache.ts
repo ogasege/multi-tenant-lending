@@ -10,6 +10,9 @@ export interface PublicBranding {
   primaryColor: string;
   secondaryColor: string;
   locale: string;
+  /** ISO 4217 code amounts default to; with the list below, what a client formats money in. */
+  defaultCurrency: string;
+  supportedCurrencies: string[];
   supportEmail: string | null;
   supportPhone: string | null;
   websiteUrl: string | null;
@@ -22,7 +25,8 @@ export interface PublicBranding {
  */
 export const PUBLIC_BRANDING_TTL_SECONDS = 60;
 
-const key = (slug: string): string => `branding:public:v1:${slug}`;
+// v2: documents gained defaultCurrency/supportedCurrencies; v1 entries simply expire.
+const key = (slug: string): string => `branding:public:v2:${slug}`;
 
 /**
  * Cache-aside store for public branding, keyed by slug. Redis is an optimisation here, not

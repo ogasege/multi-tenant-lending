@@ -46,6 +46,13 @@ export const envSchema = z.object({
   AWS_ENDPOINT_URL: z.url().optional(),
   SQS_DOMAIN_EVENTS_QUEUE_URL: z.url(),
   S3_BRANDING_BUCKET: z.string().min(3),
+  /**
+   * Endpoint that BROWSER-facing presigned S3 URLs are signed for (logo GET, upload POST),
+   * when it differs from the one the server reaches: locally the containers use
+   * `http://localstack:4566` but a browser needs `http://localhost:4566`. Unset in AWS (the
+   * regional S3 endpoint is public). Server-side S3 calls always use `AWS_ENDPOINT_URL`.
+   */
+  S3_PUBLIC_ENDPOINT_URL: z.url().optional(),
 
   // Cell-based deployment (SPEC §4.1). CELL_REGION defaults to AWS_REGION (see parseEnv).
   CELL_REGION: z
@@ -94,6 +101,21 @@ export const envSchema = z.object({
    * `IdentityVerifier` port in src/modules/customers/kyc.ts.
    */
   KYC_PROVIDER: z.enum(['mock']).default('mock'),
+  /**
+   * Disbursement payment provider and credit bureau. Only `mock` exists today and both are
+   * refused in production (API role), like `KYC_PROVIDER`; real adapters plug in behind the
+   * `PaymentGateway` and `CreditBureauPort` ports (see lending.module.ts).
+   */
+  PAYMENT_PROVIDER: z.enum(['mock']).default('mock'),
+  CREDIT_BUREAU_PROVIDER: z.enum(['mock']).default('mock'),
+  /**
+   * Procurement platform that resolves a checkout order to its vendor payee (VENDOR
+   * products). Only `mock` exists today; refused in production (API role).
+   */
+  CHECKOUT_ORDERS_PROVIDER: z.enum(['mock']).default('mock'),
+
+  /** How many days before business today a repayment's value date may be (0 = today only). */
+  REPAYMENT_MAX_BACKDATE_DAYS: z.coerce.number().int().min(0).max(31).default(3),
 
   /**
    * Test-only escape hatch for the webhook SSRF guard: allows endpoints that resolve to
@@ -150,6 +172,11 @@ function assertProductionSafe(env: ParsedEnv, cellRegion: string, role: ProcessR
     'must use TLS (rediss://) in production',
   );
   check(!env.AWS_ENDPOINT_URL, 'AWS_ENDPOINT_URL', 'must not be set in production');
+  check(
+    !env.S3_PUBLIC_ENDPOINT_URL || new URL(env.S3_PUBLIC_ENDPOINT_URL).protocol === 'https:',
+    'S3_PUBLIC_ENDPOINT_URL',
+    'must use https:// in production',
+  );
   for (const key of SECRET_KEYS) {
     check(!env[key]?.startsWith('local-only'), key, 'is a local placeholder secret');
   }
@@ -164,6 +191,17 @@ function assertProductionSafe(env: ParsedEnv, cellRegion: string, role: ProcessR
     'KYC_PROVIDER',
     'the mock identity verifier must not be used in production',
   );
+  for (const key of [
+    'PAYMENT_PROVIDER',
+    'CREDIT_BUREAU_PROVIDER',
+    'CHECKOUT_ORDERS_PROVIDER',
+  ] as const) {
+    check(
+      role !== 'api' || (env[key] as string) !== 'mock',
+      key,
+      'the mock adapter must not be used in production',
+    );
+  }
   check(
     Boolean(env.CELL_ORIGINS ?? env.CELL_ORIGIN_SUFFIX),
     'CELL_ORIGINS',

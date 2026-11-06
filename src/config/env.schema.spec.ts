@@ -53,8 +53,24 @@ describe('parseEnv', () => {
       /CELL_API/,
     ],
     ['no trusted cell list', { CELL_ORIGINS: '' }, /CELL_ORIGINS/],
+    [
+      'a plain-http browser S3 endpoint',
+      { S3_PUBLIC_ENDPOINT_URL: 'http://localhost:4566' },
+      /S3_PUBLIC_ENDPOINT_URL/,
+    ],
   ])('refuses %s in production', (_case, overrides, message) => {
     expect(() => parseEnv({ ...production, ...overrides })).toThrow(message);
+  });
+
+  it('accepts an https browser S3 endpoint in production and any URL locally', () => {
+    const https = { ...production, S3_PUBLIC_ENDPOINT_URL: 'https://s3.af-south-1.amazonaws.com' };
+    expect(parseEnv(https, { role: 'worker' }).S3_PUBLIC_ENDPOINT_URL).toBe(
+      'https://s3.af-south-1.amazonaws.com',
+    );
+    expect(
+      parseEnv({ ...base, S3_PUBLIC_ENDPOINT_URL: 'http://localhost:4566' }).S3_PUBLIC_ENDPOINT_URL,
+    ).toBe('http://localhost:4566');
+    expect(parseEnv(base).S3_PUBLIC_ENDPOINT_URL).toBeUndefined();
   });
 
   it('rejects a CELL_ORIGINS map that disagrees with this cell', () => {
@@ -63,6 +79,30 @@ describe('parseEnv', () => {
     ).toThrow(/CELL_ORIGINS/);
     expect(() => parseEnv({ ...base, CELL_ORIGINS: '["x"]' })).toThrow(/CELL_ORIGINS/);
   });
+
+  it('defaults the adapters to mock and the repayment backdate window to 3 days', () => {
+    expect(parseEnv(base)).toMatchObject({
+      PAYMENT_PROVIDER: 'mock',
+      CREDIT_BUREAU_PROVIDER: 'mock',
+      CHECKOUT_ORDERS_PROVIDER: 'mock',
+      REPAYMENT_MAX_BACKDATE_DAYS: 3,
+    });
+    expect(
+      parseEnv({ ...base, REPAYMENT_MAX_BACKDATE_DAYS: '0' }).REPAYMENT_MAX_BACKDATE_DAYS,
+    ).toBe(0);
+    expect(() => parseEnv({ ...base, REPAYMENT_MAX_BACKDATE_DAYS: '-1' })).toThrow(
+      /REPAYMENT_MAX_BACKDATE_DAYS/,
+    );
+    expect(() => parseEnv({ ...base, PAYMENT_PROVIDER: 'acme' })).toThrow(/PAYMENT_PROVIDER/);
+  });
+
+  it.each(['PAYMENT_PROVIDER', 'CREDIT_BUREAU_PROVIDER', 'CHECKOUT_ORDERS_PROVIDER'])(
+    'refuses the mock %s in production for the API, not for the worker',
+    (key) => {
+      expect(() => parseEnv(production)).toThrow(new RegExp(`${key}: the mock adapter`));
+      expect(() => parseEnv(production, { role: 'worker' })).not.toThrow();
+    },
+  );
 });
 
 describe('trustedCellOrigin', () => {

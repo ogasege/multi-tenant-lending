@@ -23,8 +23,8 @@ export class DirectoryReconciler {
   ) {}
 
   projectPendingInstitutions(): Promise<ReconcileSummary> {
-    return projectPendingInstitutions(this.source, this.projector, (institution) =>
-      this.conflicts.reportIfConflicting(institution.slug, institution.institutionId),
+    return projectPendingInstitutions(this.source, this.projector, (institution, current) =>
+      this.conflicts.reportIfConflicting(institution.slug, institution.institutionId, current),
     );
   }
 }

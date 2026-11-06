@@ -1,6 +1,7 @@
 import {
   type CellEndpoint,
   DIRECTORY_STATUSES,
+  type DirectoryEntry,
   type DirectoryStatus,
   isValidSlug,
 } from '../domain/directory-entry';
@@ -30,7 +31,14 @@ export interface InstitutionEvent {
   payload: Readonly<Record<string, unknown>>;
 }
 
-export type ProjectionResult = 'applied' | 'stale' | 'ignored';
+/**
+ * Outcome of projecting one event. `stale` carries the slug and the row that blocked the
+ * write (unvalidated, see `UpsertResult`), so a conflict check needs no further read.
+ */
+export type ProjectionResult =
+  | { result: 'applied'; slug: string }
+  | { result: 'stale'; slug: string; current?: DirectoryEntry }
+  | { result: 'ignored' };
 
 /** Source-of-truth lookup for events whose payload does not carry the slug. */
 export interface InstitutionLookup {
@@ -63,7 +71,9 @@ export class DirectoryProjector {
   ) {}
 
   async project(event: InstitutionEvent): Promise<ProjectionResult> {
-    if (!(DIRECTORY_EVENT_TYPES as readonly string[]).includes(event.type)) return 'ignored';
+    if (!(DIRECTORY_EVENT_TYPES as readonly string[]).includes(event.type)) {
+      return { result: 'ignored' };
+    }
     const { payload } = event;
 
     const institutionId = payload.institutionId;
@@ -86,10 +96,10 @@ export class DirectoryProjector {
     const slug = isValidSlug(payload.slug)
       ? payload.slug
       : await this.institutions.slugOf(institutionId);
-    if (!slug) return 'ignored';
+    if (!slug) return { result: 'ignored' };
 
     await this.ensureCellRegistered();
-    const result = await this.directory.upsert({
+    const outcome = await this.directory.upsert({
       slug,
       institutionId,
       homeRegion,
@@ -98,8 +108,13 @@ export class DirectoryProjector {
       version,
       updatedAt: new Date().toISOString(),
     });
-    if (result === 'applied') await this.onApplied?.(slug);
-    return result;
+    if (outcome.result === 'applied') {
+      await this.onApplied?.(slug);
+      return { result: 'applied', slug };
+    }
+    return outcome.current
+      ? { result: 'stale', slug, current: outcome.current }
+      : { result: 'stale', slug };
   }
 
   /** The cell record lets other cells resolve this region's base URL (421 responses). */

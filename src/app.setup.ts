@@ -1,10 +1,14 @@
 import { type INestApplication, type VersioningOptions, VersioningType } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule, type OpenAPIObject } from '@nestjs/swagger';
+import type { NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
 
 import type { Env } from './config/env.schema';
 import { createValidationPipe } from './common/http/validation.pipe';
+
+/** Response header naming the cell (AWS region) that served the request. */
+export const CELL_HEADER = 'X-Tenant-Cell';
 
 /** URI versioning (`/v1/...`); also applied by the OpenAPI export so paths match. */
 export const API_VERSIONING: VersioningOptions = { type: VersioningType.URI, defaultVersion: '1' };
@@ -15,6 +19,13 @@ export function configureApp(app: NestExpressApplication, config: Env): void {
   app.set('trust proxy', 1);
   app.useBodyParser('json', { limit: '100kb' });
   app.use(helmet());
+  // Which cell served the response (SPEC §4.1). Set before routing, so every response carries
+  // it, errors included; the cell-routing 307 overwrites it with the tenant's home cell. The
+  // value is this cell's fixed region, so it reveals nothing about any tenant.
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader(CELL_HEADER, config.CELL_REGION);
+    next();
+  });
   app.enableCors({
     origin: config.CORS_ORIGINS.length ? config.CORS_ORIGINS : false,
     allowedHeaders: ['Authorization', 'Content-Type', 'Idempotency-Key', 'X-Request-ID'],
@@ -24,6 +35,7 @@ export function configureApp(app: NestExpressApplication, config: Env): void {
       'Retry-After',
       'RateLimit',
       'RateLimit-Policy',
+      CELL_HEADER,
     ],
   });
   app.enableVersioning(API_VERSIONING);

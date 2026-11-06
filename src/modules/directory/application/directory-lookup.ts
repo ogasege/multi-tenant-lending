@@ -66,7 +66,11 @@ export class DirectoryLookup implements CellLocator {
     return this.cache.invalidate(slug);
   }
 
-  private sanitise(entry: DirectoryEntry | undefined): DirectoryEntry | undefined {
+  /**
+   * `entry` if lookups may trust it (well-formed slug, region and status, and a base URL that
+   * is the configured origin of its home region), else `undefined`.
+   */
+  sanitise(entry: DirectoryEntry | undefined): DirectoryEntry | undefined {
     if (!entry) return undefined;
     const apiBaseUrl = parseApiBaseUrl(entry.apiBaseUrl, this.allowInsecure);
     const valid =

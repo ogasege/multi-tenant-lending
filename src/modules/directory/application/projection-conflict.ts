@@ -47,6 +47,12 @@ export function projectionConflict(
  * Logs `directory.projection_conflict` (warn) after a `stale` projection when the slug's
  * directory row belongs to another institution or cell. Shared by the outbox relay
  * (per-event projection) and the periodic reconciler.
+ *
+ * It judges the row the failed conditional write returned (`current`), so a reconcile pass
+ * costs one write per institution and no extra read. That row is validated exactly like a
+ * lookup (`DirectoryLookup.sanitise`): one lookups would not trust, or a `PENDING`
+ * reservation (`undefined`), is not ours and therefore a conflict. Only then is the cached
+ * entry invalidated, so routing re-reads the directory; a harmless replay touches no cache.
  */
 @Injectable()
 export class ProjectionConflictReporter {
@@ -61,17 +67,17 @@ export class ProjectionConflictReporter {
   async reportIfConflicting(
     slug: string,
     institutionId: string,
+    current: DirectoryEntry | undefined,
     context: Readonly<Record<string, unknown>> = {},
   ): Promise<void> {
-    // Bypass the 60 s cache: the decision must reflect the directory as it is now.
-    await this.directory.invalidate(slug);
     const conflict = projectionConflict(
       slug,
-      await this.directory.find(slug),
+      this.directory.sanitise(current),
       institutionId,
       this.config.CELL_REGION,
     );
     if (!conflict) return;
+    await this.directory.invalidate(slug);
     this.logger.warn({
       msg: 'directory.projection_conflict',
       event: 'directory.projection_conflict',

@@ -4,12 +4,17 @@ import { sql } from 'kysely';
 import request from 'supertest';
 
 import { verifyAuditChain } from '@/common/audit/audit-writer';
+import { ROLE_PERMISSIONS } from '@/common/auth/permissions';
+import { TokenService } from '@/common/auth/token.service';
 import { TransactionRunner } from '@/common/database/transaction-runner';
 
 import {
+  createPlatformAdmin,
   IDENTITY_MODULES,
   jwtClaims,
   type PageBody,
+  registerCustomer,
+  type RegistrationBody,
   type SessionBody,
   type StaffBody,
   STRONG_PASSWORD,
@@ -398,6 +403,65 @@ describe('Tenant authentication and staff management', () => {
         .set('Authorization', `Bearer ${other.tokens.INSTITUTION_ADMIN}`)
         .send({ status: 'DISABLED' })
         .expect(404);
+    });
+  });
+
+  describe('GET /v1/me (any authenticated principal)', () => {
+    const me = (token?: string) => {
+      const req = request(t.http).get('/v1/me');
+      return token ? req.set('Authorization', `Bearer ${token}`) : req;
+    };
+
+    it('returns a staff user’s profile, role permissions and institution', async () => {
+      const staff = (await createStaff('FINANCE_OFFICER').expect(201)).body as StaffBody;
+      const session = (await login(staff.email).expect(200)).body as SessionBody;
+      const res = await me(session.accessToken).expect(200);
+      expect(res.body).toEqual({
+        kind: 'USER',
+        id: staff.id,
+        fullName: 'Chidi Okeke',
+        email: staff.email,
+        role: 'FINANCE_OFFICER',
+        permissions: [...ROLE_PERMISSIONS.FINANCE_OFFICER],
+        institution: { slug: tenant.slug, displayName: `${tenant.slug} Credit` },
+      });
+      const body = JSON.stringify(res.body);
+      expect(body).not.toContain(tenant.tenantId);
+      expect(body).not.toMatch(/password|hash/i);
+    });
+
+    it('serves customers too (no staff permission needed)', async () => {
+      const registered = (await registerCustomer(t.http, tenant.slug).expect(201))
+        .body as RegistrationBody;
+      const res = await me(registered.tokens.accessToken).expect(200);
+      expect(res.body).toMatchObject({
+        kind: 'USER',
+        role: 'CUSTOMER',
+        fullName: 'Amaka Eze',
+        permissions: [...ROLE_PERMISSIONS.CUSTOMER],
+      });
+    });
+
+    it('returns only the id and kind of a platform admin', async () => {
+      const admin = await createPlatformAdmin(t.app);
+      const token = t.app
+        .get(TokenService)
+        .issueAccessToken({ kind: 'PLATFORM_ADMIN', id: admin.id }).accessToken;
+      const res = await me(token).expect(200);
+      expect(res.body).toEqual({ kind: 'PLATFORM_ADMIN', id: admin.id });
+    });
+
+    it('requires a valid token and honours revocation (disabled user → 401)', async () => {
+      await me().expect(401);
+      const staff = (await createStaff().expect(201)).body as StaffBody;
+      const session = (await login(staff.email).expect(200)).body as SessionBody;
+      await me(session.accessToken).expect(200);
+      await request(t.http)
+        .patch(`/v1/users/${staff.id}`)
+        .set('Authorization', `Bearer ${tenant.tokens.INSTITUTION_ADMIN}`)
+        .send({ status: 'DISABLED' })
+        .expect(200);
+      await me(session.accessToken).expect(401);
     });
   });
 });

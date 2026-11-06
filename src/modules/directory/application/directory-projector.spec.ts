@@ -22,9 +22,11 @@ class FakeDirectory implements TenantDirectory {
     const current = this.rows.get(entry.slug);
     const owned =
       current?.homeRegion === entry.homeRegion && current.institutionId === entry.institutionId;
-    if (current && (!owned || current.version >= entry.version)) return Promise.resolve('stale');
+    if (current && (!owned || current.version >= entry.version)) {
+      return Promise.resolve({ result: 'stale', current });
+    }
     this.rows.set(entry.slug, entry);
-    return Promise.resolve('applied');
+    return Promise.resolve({ result: 'applied' });
   }
 
   reserve(r: SlugReservation): Promise<ReserveResult> {
@@ -79,7 +81,10 @@ describe('DirectoryProjector', () => {
   });
 
   it('projects a registration as an ACTIVE entry pointing at this cell', async () => {
-    await expect(projector.project(registered(100))).resolves.toBe('applied');
+    await expect(projector.project(registered(100))).resolves.toEqual({
+      result: 'applied',
+      slug: 'acme-mfb',
+    });
     expect(directory.rows.get('acme-mfb')).toMatchObject({
       slug: 'acme-mfb',
       institutionId: ID,
@@ -94,14 +99,20 @@ describe('DirectoryProjector', () => {
 
   it('applies a newer status change, looking the slug up by institution id', async () => {
     await projector.project(registered(100));
-    await expect(projector.project(statusChanged(200, 'SUSPENDED'))).resolves.toBe('applied');
+    await expect(projector.project(statusChanged(200, 'SUSPENDED'))).resolves.toMatchObject({
+      result: 'applied',
+    });
     expect(directory.rows.get('acme-mfb')).toMatchObject({ status: 'SUSPENDED', version: 200 });
   });
 
   it('never lets an older event overwrite a newer state (out-of-order delivery)', async () => {
     await projector.project(statusChanged(300, 'SUSPENDED'));
-    await expect(projector.project(registered(100))).resolves.toBe('stale');
-    await expect(projector.project(statusChanged(200, 'ACTIVE'))).resolves.toBe('stale');
+    await expect(projector.project(registered(100))).resolves.toMatchObject({ result: 'stale' });
+    await expect(projector.project(statusChanged(200, 'ACTIVE'))).resolves.toMatchObject({
+      result: 'stale',
+      slug: 'acme-mfb',
+      current: { status: 'SUSPENDED', version: 300 },
+    });
     expect(directory.rows.get('acme-mfb')).toMatchObject({ status: 'SUSPENDED', version: 300 });
   });
 
@@ -116,7 +127,12 @@ describe('DirectoryProjector', () => {
       updatedAt: '',
     };
     directory.rows.set('acme-mfb', foreign);
-    await expect(projector.project(registered(999))).resolves.toBe('stale');
+    // The blocking row comes back with the stale result (no extra read needed).
+    await expect(projector.project(registered(999))).resolves.toEqual({
+      result: 'stale',
+      slug: 'acme-mfb',
+      current: foreign,
+    });
     expect(directory.rows.get('acme-mfb')).toBe(foreign);
   });
 
@@ -124,7 +140,7 @@ describe('DirectoryProjector', () => {
     await projector.project(registered(100));
     const before = directory.rows.get('acme-mfb');
     invalidated.length = 0;
-    await expect(projector.project(registered(100))).resolves.toBe('stale');
+    await expect(projector.project(registered(100))).resolves.toMatchObject({ result: 'stale' });
     expect(directory.rows.get('acme-mfb')).toBe(before);
     expect(invalidated).toEqual([]);
   });
@@ -160,14 +176,14 @@ describe('DirectoryProjector', () => {
   it('ignores unrelated events and institutions it cannot find', async () => {
     await expect(
       projector.project({ type: 'loan.disbursed', version: 1, payload: {} }),
-    ).resolves.toBe('ignored');
+    ).resolves.toEqual({ result: 'ignored' });
     await expect(
       projector.project({
         type: 'institution.status_changed',
         version: 1,
         payload: { institutionId: 'unknown', to: 'ACTIVE' },
       }),
-    ).resolves.toBe('ignored');
+    ).resolves.toEqual({ result: 'ignored' });
     expect(directory.rows.size).toBe(0);
   });
 
@@ -240,6 +256,9 @@ describe('projectPendingInstitutions', () => {
     await projectPendingInstitutions(source, projector, onStale);
     expect(onStale).not.toHaveBeenCalled();
     await projectPendingInstitutions(source, projector, onStale);
-    expect(onStale).toHaveBeenCalledExactlyOnceWith(institution);
+    expect(onStale).toHaveBeenCalledExactlyOnceWith(
+      institution,
+      expect.objectContaining({ institutionId: ID, version: 100 }),
+    );
   });
 });
