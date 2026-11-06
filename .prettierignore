@@ -4,3 +4,4 @@ node_modules
 infra/terraform/**/.terraform
 docs/api/openapi.json
 package-lock.json
+openapi/openapi.json
