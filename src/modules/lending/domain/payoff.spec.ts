@@ -2,7 +2,7 @@ import fc from 'fast-check';
 
 import { addDays } from './dates';
 import { type InstalmentBalance, outstandingOf } from './instalment-balance';
-import { payoffQuote, settlementWaivers } from './payoff';
+import { earningHorizon, payoffQuote, settlementWaivers } from './payoff';
 import { generateSchedule } from './schedule';
 import { allocateRepayment } from './waterfall';
 
@@ -76,6 +76,32 @@ describe('payoff', () => {
     expect(waivers.reduce((a, w) => a + w.interestWaived, 0n)).toBe(962_065n);
   });
 
+  describe('backdated settlement (value date before business today)', () => {
+    // Value date 15 Apr, but business today is 30 Apr: #3 (due 30 Apr) is already earned.
+    const options = { earnedThrough: '2026-04-30' };
+
+    it('charges interest due up to business today, not just up to the value date', () => {
+      const q = payoffQuote(rows, '2026-04-15', options);
+      expect(q.asOf).toBe('2026-04-15');
+      expect(q.interest).toBe(185_088n + 169_878n);
+      expect(q).toEqual({ ...payoffQuote(rows, '2026-04-30'), asOf: '2026-04-15' });
+    });
+
+    it('never waives interest of an instalment due on or before business today', () => {
+      const waivers = settlementWaivers(rows, '2026-04-15', options);
+      expect(waivers.map((w) => w.seq)).toEqual([4, 5, 6, 7, 8, 9, 10, 11, 12]);
+      expect(waivers.reduce((a, w) => a + w.interestWaived, 0n)).toBe(
+        payoffQuote(rows, '2026-04-15', options).waivedInterest,
+      );
+    });
+
+    it('a value date after the horizon still decides (forward-dated quotes)', () => {
+      expect(earningHorizon('2026-05-31', options)).toBe('2026-05-31');
+      expect(earningHorizon('2026-04-15', options)).toBe('2026-04-30');
+      expect(earningHorizon('2026-04-15')).toBe('2026-04-15');
+    });
+  });
+
   it('property: waivers + paying exactly the payoff settles everything with nothing left', () => {
     fc.assert(
       fc.property(
@@ -83,13 +109,19 @@ describe('payoff', () => {
         fc.integer({ min: 1, max: 36 }),
         fc.integer({ min: -10, max: 1200 }),
         fc.integer({ min: 0, max: 100 }),
-        (principal, term, offsetDays, paidPct) => {
+        fc.integer({ min: 0, max: 60 }),
+        (principal, term, offsetDays, paidPct, backdatedDays) => {
           const fresh = balancesFor(principal, term);
           const totalDue = fresh.reduce((a, r) => a + r.principalDue + r.interestDue, 0n);
           const paid = applyPaid(fresh, (totalDue * BigInt(paidPct)) / 200n);
           const asOf = addDays('2026-01-31', offsetDays);
-          const quote = payoffQuote(paid, asOf);
-          const waivers = settlementWaivers(paid, asOf);
+          const options = { earnedThrough: addDays(asOf, backdatedDays) };
+          const quote = payoffQuote(paid, asOf, options);
+          const waivers = settlementWaivers(paid, asOf, options);
+          const horizon = earningHorizon(asOf, options);
+          for (const w of waivers) {
+            expect(paid.find((r) => r.seq === w.seq)?.dueDate.localeCompare(horizon)).toBe(1);
+          }
           expect(waivers.reduce((a, w) => a + w.interestWaived, 0n)).toBe(quote.waivedInterest);
           const waived = paid.map((r) => ({
             ...r,

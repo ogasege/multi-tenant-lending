@@ -1,0 +1,235 @@
+import { Injectable } from '@nestjs/common';
+
+import { AuditWriter } from '../../../common/audit/audit-writer';
+import type { TenantUser } from '../../../common/auth/decorators';
+import type { Tx } from '../../../common/database/database.tokens';
+import type { PayeeType } from '../../../common/database/schema';
+import { TransactionRunner } from '../../../common/database/transaction-runner';
+import {
+  BusinessRuleError,
+  NotFoundError,
+  ValidationError,
+} from '../../../common/errors/app-error';
+import { ErrorCode } from '../../../common/errors/error-codes';
+import { OutboxWriter } from '../../../common/outbox/outbox-writer';
+import {
+  ApplicationsRepository,
+  type CustomerRow,
+} from '../infrastructure/applications.repository';
+import { newReference } from '../infrastructure/references';
+
+import { type ApplicationView, audienceOf, toApplicationView } from './lending.views';
+import { CheckoutOrders } from './ports/checkout-orders.port';
+
+interface Payee {
+  type: PayeeType;
+  name: string;
+  account: string;
+}
+
+export interface SubmitApplicationCommand {
+  /** Required when staff apply on a customer's behalf; ignored rules for customers below. */
+  customerId?: string;
+  productId: string;
+  principal: string;
+  term: number;
+  purpose?: string;
+  /** Required for BORROWER-mode products; for VENDOR-mode it comes from the checkout order. */
+  payee?: { type?: PayeeType; name: string; account: string };
+  externalOrderReference?: string;
+}
+
+/**
+ * Submits a loan application against a product's CURRENT version (SPEC §7.1, §7.2).
+ *
+ * A CUSTOMER applies for themself (a different `customerId` is reported as 404, never as
+ * another customer's existence); a CREDIT_OFFICER applies on a customer's behalf and must name
+ * the customer. Rules, in order: product exists and is ACTIVE (422 PRODUCT_NOT_ACTIVE);
+ * principal and term within the version's limits (422 AMOUNT_/TERM_OUT_OF_PRODUCT_RANGE);
+ * customer currency = product currency (422 CURRENCY_MISMATCH); customer KYC VERIFIED
+ * (422 KYC_NOT_VERIFIED). Writes the application, audit and `loan_application.submitted` in
+ * one transaction.
+ *
+ * Payee (who receives the disbursement) — never simply whatever the borrower typed:
+ *
+ * - VENDOR-mode products (checkout financing): `externalOrderReference` is required (400) and
+ *   the payee is the order's vendor as resolved by the procurement platform
+ *   ({@link CheckoutOrders}); an unknown order is 422 CHECKOUT_ORDER_NOT_FOUND. A payee in the
+ *   request is optional and, if present, must be that same VENDOR account (else 422
+ *   PAYEE_NOT_ALLOWED); its name is replaced by the platform's.
+ * - BORROWER-mode products: the payee is required; a CUSTOMER can only name a payee of the
+ *   product's disbursement mode (a VENDOR payee is 422 PAYEE_NOT_ALLOWED), while staff may
+ *   direct it to a vendor (audited). PRODUCTION PATH: the account is confirmed by a bank
+ *   name enquiry (NIBSS NIP NE / the WAEMU switch equivalent) before approval, and the
+ *   disbursement refused unless the returned account name matches the KYC-verified customer
+ *   name; the mock payment gateway stands in for it today.
+ */
+@Injectable()
+export class SubmitApplication {
+  constructor(
+    private readonly runner: TransactionRunner,
+    private readonly repo: ApplicationsRepository,
+    private readonly audit: AuditWriter,
+    private readonly outbox: OutboxWriter,
+    private readonly orders: CheckoutOrders,
+  ) {}
+
+  execute(principal: TenantUser, cmd: SubmitApplicationCommand): Promise<ApplicationView> {
+    return this.runner.run(async (tx) => {
+      const customer = await this.applicant(tx, principal, cmd.customerId);
+      if (!customer || (cmd.customerId !== undefined && customer.id !== cmd.customerId)) {
+        throw new NotFoundError('Customer', cmd.customerId);
+      }
+
+      const found = await this.repo.productWithCurrentVersion(tx, cmd.productId);
+      if (!found) throw new NotFoundError('Loan product', cmd.productId);
+      const { product, version } = found;
+      if (product.status !== 'ACTIVE') {
+        throw new BusinessRuleError(ErrorCode.PRODUCT_NOT_ACTIVE, 'This product is archived');
+      }
+
+      const principalAmount = BigInt(cmd.principal);
+      if (principalAmount < version.min_principal || principalAmount > version.max_principal) {
+        throw new BusinessRuleError(
+          ErrorCode.AMOUNT_OUT_OF_PRODUCT_RANGE,
+          `Principal must be between ${version.min_principal} and ${version.max_principal} ${version.currency} minor units`,
+          {
+            minPrincipal: version.min_principal.toString(),
+            maxPrincipal: version.max_principal.toString(),
+          },
+        );
+      }
+      if (cmd.term < version.min_term || cmd.term > version.max_term) {
+        throw new BusinessRuleError(
+          ErrorCode.TERM_OUT_OF_PRODUCT_RANGE,
+          `Term must be between ${version.min_term} and ${version.max_term}`,
+          { minTerm: version.min_term, maxTerm: version.max_term },
+        );
+      }
+      if (customer.currency !== version.currency) {
+        throw new BusinessRuleError(
+          ErrorCode.CURRENCY_MISMATCH,
+          `The customer reports in ${customer.currency} but the product lends in ${version.currency}`,
+        );
+      }
+      if (customer.kyc_status !== 'VERIFIED') {
+        throw new BusinessRuleError(
+          ErrorCode.KYC_NOT_VERIFIED,
+          'The customer’s identity has not been verified',
+        );
+      }
+
+      const payee = await this.payee(principal, version.disbursement_mode, version.currency, cmd);
+
+      const row = await this.repo.insert(tx, {
+        tenant_id: principal.tenantId,
+        reference: newReference('APP'),
+        customer_id: customer.id,
+        product_id: product.id,
+        product_version_id: version.id,
+        currency: version.currency,
+        requested_principal: principalAmount,
+        term: cmd.term,
+        purpose: cmd.purpose?.trim() ?? null,
+        payee_type: payee.type,
+        payee_name: payee.name,
+        payee_account: payee.account,
+        external_order_reference: cmd.externalOrderReference ?? null,
+        status: 'SUBMITTED',
+        submitted_by: principal.id,
+      });
+      const view = toApplicationView(row, null);
+
+      await this.audit.record(tx, {
+        action: 'loan_application.submitted',
+        entityType: 'loan_application',
+        entityId: row.id,
+        after: view,
+      });
+      await this.outbox.publish(tx, {
+        type: 'loan_application.submitted',
+        aggregateType: 'loan_application',
+        aggregateId: row.id,
+        data: {
+          applicationId: row.id,
+          reference: row.reference,
+          customerId: row.customer_id,
+          productId: row.product_id,
+          currency: row.currency,
+          requestedPrincipal: row.requested_principal.toString(),
+          term: row.term,
+          externalOrderReference: row.external_order_reference,
+        },
+      });
+      return toApplicationView(row, null, audienceOf(principal));
+    });
+  }
+
+  /** The disbursement payee (rules in the class comment). */
+  private async payee(
+    principal: TenantUser,
+    mode: PayeeType,
+    currency: string,
+    cmd: SubmitApplicationCommand,
+  ): Promise<Payee> {
+    if (mode === 'VENDOR') {
+      const reference = cmd.externalOrderReference;
+      if (reference === undefined) {
+        throw new ValidationError('Request validation failed', [
+          {
+            field: 'externalOrderReference',
+            message: 'externalOrderReference is required for checkout (VENDOR) financing',
+          },
+        ]);
+      }
+      const order = await this.orders.find(reference, { tenantId: principal.tenantId, currency });
+      if (!order) {
+        throw new BusinessRuleError(
+          ErrorCode.CHECKOUT_ORDER_NOT_FOUND,
+          'The checkout order is unknown to the procurement platform',
+          { externalOrderReference: reference },
+        );
+      }
+      if (
+        cmd.payee &&
+        ((cmd.payee.type ?? 'VENDOR') !== 'VENDOR' || cmd.payee.account !== order.vendor.account)
+      ) {
+        throw new BusinessRuleError(
+          ErrorCode.PAYEE_NOT_ALLOWED,
+          'Checkout financing is paid to the order’s vendor only',
+        );
+      }
+      return { type: 'VENDOR', name: order.vendor.name, account: order.vendor.account };
+    }
+
+    if (!cmd.payee) {
+      throw new ValidationError('Request validation failed', [
+        { field: 'payee', message: 'payee is required for this product' },
+      ]);
+    }
+    const type = cmd.payee.type ?? mode;
+    if (principal.role === 'CUSTOMER' && type !== mode) {
+      throw new BusinessRuleError(
+        ErrorCode.PAYEE_NOT_ALLOWED,
+        `This product disburses to a ${mode.toLowerCase()} payee only`,
+        { disbursementMode: mode },
+      );
+    }
+    return { type, name: cmd.payee.name.trim(), account: cmd.payee.account };
+  }
+
+  /** A customer applies for themself; staff must name the customer they apply for. */
+  private applicant(
+    tx: Tx,
+    principal: TenantUser,
+    customerId: string | undefined,
+  ): Promise<CustomerRow | undefined> {
+    if (principal.role === 'CUSTOMER') return this.repo.customerByUserId(tx, principal.id);
+    if (!customerId) {
+      throw new ValidationError('Request validation failed', [
+        { field: 'customerId', message: 'customerId is required when applying for a customer' },
+      ]);
+    }
+    return this.repo.customerById(tx, customerId);
+  }
+}

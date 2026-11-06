@@ -2,12 +2,16 @@ import { Module } from '@nestjs/common';
 
 import { AwsModule } from './common/aws/aws.module';
 import { CommonModule } from './common/common.module';
+import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { DirectoryModule } from './modules/directory/directory.module';
 import { HealthModule } from './modules/health/health.module';
 import { InstitutionsModule } from './modules/institutions/institutions.module';
+import { LedgerModule } from './modules/ledger/ledger.module';
+import { LendingModule } from './modules/lending/lending.module';
 import { LoanProductsModule } from './modules/loan-products/loan-products.module';
+import { OperationsModule } from './modules/operations/operations.module';
 import { PlatformModule } from './modules/platform/platform.module';
 import { UsersModule } from './modules/users/users.module';
 
@@ -30,6 +34,11 @@ import { UsersModule } from './modules/users/users.module';
     // White-label configuration
     InstitutionsModule,
     LoanProductsModule,
+    // Lending workflow, double-entry ledger, end-of-day processing, audit trail
+    LedgerModule,
+    LendingModule,
+    OperationsModule,
+    AuditModule,
   ],
 })
 export class AppModule {}
