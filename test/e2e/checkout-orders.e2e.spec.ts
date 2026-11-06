@@ -99,6 +99,38 @@ describe('Checkout order binding', () => {
       const again = await apply(t, alice.token, body(alicesOrder)).expect(409);
       expect(again.body.code).toBe('ORDER_ALREADY_FINANCED');
     });
+
+    it('another customer’s refused attempt does not reserve the order: its buyer still applies', async () => {
+      const alicesOrder = orders.place(alice.id, 60_000_000n);
+      for (let i = 0; i < 2; i++) {
+        const squat = await apply(t, bob.token, body(alicesOrder)).expect(422);
+        expect(squat.body.code).toBe('ORDER_NOT_FOR_APPLICANT');
+      }
+      const ok = await apply(t, alice.token, body(alicesOrder)).expect(201);
+      expect(ok.body).toMatchObject({ externalOrderReference: alicesOrder, status: 'SUBMITTED' });
+      // Once financed, someone else's attempt still reads as "not yours", not as "financed".
+      const later = await apply(t, bob.token, body(alicesOrder)).expect(422);
+      expect(later.body.code).toBe('ORDER_NOT_FOR_APPLICANT');
+    });
+
+    it('an order reference on a BORROWER-mode product is 422 ORDER_REFERENCE_NOT_ALLOWED', async () => {
+      const borrowerProduct = await createProduct(t.http, ngn, ngnMonthlyTerms());
+      const alicesOrder = orders.place(alice.id, 60_000_000n);
+      const res = await apply(t, bob.token, {
+        productId: borrowerProduct,
+        principal: '50000000',
+        term: 3,
+        payee: { type: 'BORROWER', name: 'Bob', account: '0123456789' },
+        externalOrderReference: alicesOrder,
+      }).expect(422);
+      expect(res.headers['content-type']).toMatch(/application\/problem\+json/);
+      expect(res.body).toMatchObject({
+        code: 'ORDER_REFERENCE_NOT_ALLOWED',
+        detail: 'Order references apply only to checkout (supplier-paid) products',
+      });
+      // Nothing was reserved: the buyer finances it through a checkout product.
+      await apply(t, alice.token, body(alicesOrder)).expect(201);
+    });
   });
 
   describe('with the mock procurement platform (no buyer / total attestation)', () => {

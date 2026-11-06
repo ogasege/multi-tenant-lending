@@ -113,7 +113,8 @@ export class SubmitApplicationDto {
       'Checkout order id; required for VENDOR-mode products (422 CHECKOUT_ORDER_NOT_FOUND ' +
       'when the procurement platform does not know it; 422 ORDER_NOT_FOR_APPLICANT when it ' +
       'was placed by another customer; 422 ORDER_AMOUNT_EXCEEDED when the principal is above ' +
-      'its total). An order backs at most one live application (409 ORDER_ALREADY_FINANCED).',
+      'its total). An order backs at most one live application (409 ORDER_ALREADY_FINANCED). ' +
+      'Refused for BORROWER-mode products (422 ORDER_REFERENCE_NOT_ALLOWED).',
   })
   @IsOptional()
   @Matches(/^[A-Za-z0-9_.:-]{1,100}$/, { message: 'externalOrderReference has invalid chars' })

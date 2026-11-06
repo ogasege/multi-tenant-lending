@@ -41,6 +41,7 @@ export interface SubmitApplicationCommand {
   purpose?: string;
   /** Required for BORROWER-mode products; for VENDOR-mode it comes from the checkout order. */
   payee?: { type?: PayeeType; name: string; account: string };
+  /** Required for VENDOR-mode products; refused (422) for BORROWER-mode products. */
   externalOrderReference?: string;
 }
 
@@ -67,15 +68,25 @@ export interface SubmitApplicationCommand {
  *   attests neither, real adapters must attest both.
  * - BORROWER-mode products: the payee is required; a CUSTOMER can only name a payee of the
  *   product's disbursement mode (a VENDOR payee is 422 PAYEE_NOT_ALLOWED), while staff may
- *   direct it to a vendor (audited). PRODUCTION PATH: the account is confirmed by a bank
- *   name enquiry (NIBSS NIP NE / the WAEMU switch equivalent) before approval, and the
- *   disbursement refused unless the returned account name matches the KYC-verified customer
- *   name; the mock payment gateway stands in for it today.
+ *   direct it to a vendor (audited). An `externalOrderReference` is refused (422
+ *   ORDER_REFERENCE_NOT_ALLOWED): it would never be resolved through {@link CheckoutOrders},
+ *   so accepting it would let anyone reserve another pharmacy's order and block its real
+ *   checkout. PRODUCTION PATH: the account is confirmed by a bank name enquiry (NIBSS NIP NE /
+ *   the WAEMU switch equivalent) before approval, and the disbursement refused unless the
+ *   returned account name matches the KYC-verified customer name; the mock payment gateway
+ *   stands in for it today.
  *
- * An `externalOrderReference` backs at most one live (SUBMITTED, ASSESSED, APPROVED)
- * application per tenant: checked in the transaction and, for concurrent submissions,
- * enforced by the `loan_applications_order_once` unique index; both are 409
- * ORDER_ALREADY_FINANCED. A rejected, withdrawn or expired application frees the order.
+ * A checkout order backs at most one live (SUBMITTED, ASSESSED, APPROVED) application per
+ * tenant: checked in the transaction and, for concurrent submissions, enforced by the
+ * `loan_applications_order_once` unique index; both are 409 ORDER_ALREADY_FINANCED. A
+ * rejected, withdrawn or expired application frees the order. The single-use check runs
+ * last, only once the order is resolved and every ownership check has passed (not found →
+ * wrong buyer → amount → payee → single use), so a refused application never consumes an
+ * order and never reveals whether it is already financed.
+ *
+ * LIMITATION: with the mock adapter (no buyer attestation) any customer of the tenant can
+ * still reserve a VENDOR order that another pharmacy placed, in the demo. A real procurement
+ * adapter that attests `buyerCustomerId` closes it.
  */
 @Injectable()
 export class SubmitApplication {
@@ -132,18 +143,13 @@ export class SubmitApplication {
         );
       }
 
-      const payee = await this.payee(principal, version.disbursement_mode, cmd, {
-        currency: version.currency,
-        customerId: customer.id,
-        principal: principalAmount,
-      });
-      const orderReference = cmd.externalOrderReference;
-      if (
-        orderReference !== undefined &&
-        (await this.repo.hasLiveApplicationForOrder(tx, orderReference))
-      ) {
-        throw orderAlreadyFinanced(orderReference);
-      }
+      const { payee, orderReference } = await this.payee(
+        tx,
+        principal,
+        version.disbursement_mode,
+        cmd,
+        { currency: version.currency, customerId: customer.id, principal: principalAmount },
+      );
 
       const row = await this.insert(tx, {
         tenant_id: principal.tenantId,
@@ -158,7 +164,7 @@ export class SubmitApplication {
         payee_type: payee.type,
         payee_name: payee.name,
         payee_account: payee.account,
-        external_order_reference: orderReference ?? null,
+        external_order_reference: orderReference,
         status: 'SUBMITTED',
         submitted_by: principal.id,
       });
@@ -204,13 +210,19 @@ export class SubmitApplication {
     }
   }
 
-  /** The disbursement payee (rules in the class comment). */
+  /**
+   * The disbursement payee and, for checkout financing, the resolved order reference (rules
+   * in the class comment). For VENDOR products the checks run in a fixed order — not found →
+   * wrong buyer → amount → payee → single use — so the single-use lookup only ever happens
+   * for an order the applicant is entitled to.
+   */
   private async payee(
+    tx: Tx,
     principal: TenantUser,
     mode: PayeeType,
     cmd: SubmitApplicationCommand,
     applicant: { currency: string; customerId: string; principal: bigint },
-  ): Promise<Payee> {
+  ): Promise<{ payee: Payee; orderReference: string | null }> {
     const { currency } = applicant;
     if (mode === 'VENDOR') {
       const reference = cmd.externalOrderReference;
@@ -254,9 +266,23 @@ export class SubmitApplication {
           'Checkout financing is paid to the order’s vendor only',
         );
       }
-      return { type: 'VENDOR', name: order.vendor.name, account: order.vendor.account };
+      // Single use last: only an order the applicant may finance is looked up (or reserved).
+      if (await this.repo.hasLiveApplicationForOrder(tx, reference)) {
+        throw orderAlreadyFinanced(reference);
+      }
+      return {
+        payee: { type: 'VENDOR', name: order.vendor.name, account: order.vendor.account },
+        orderReference: reference,
+      };
     }
 
+    if (cmd.externalOrderReference !== undefined) {
+      throw new BusinessRuleError(
+        ErrorCode.ORDER_REFERENCE_NOT_ALLOWED,
+        'Order references apply only to checkout (supplier-paid) products',
+        { disbursementMode: mode },
+      );
+    }
     if (!cmd.payee) {
       throw new ValidationError('Request validation failed', [
         { field: 'payee', message: 'payee is required for this product' },
@@ -270,7 +296,10 @@ export class SubmitApplication {
         { disbursementMode: mode },
       );
     }
-    return { type, name: cmd.payee.name.trim(), account: cmd.payee.account };
+    return {
+      payee: { type, name: cmd.payee.name.trim(), account: cmd.payee.account },
+      orderReference: null,
+    };
   }
 
   /** A customer applies for themself; staff must name the customer they apply for. */

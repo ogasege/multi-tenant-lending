@@ -160,4 +160,51 @@ describe('SubmitApplication — checkout order binding', () => {
       ),
     ).rejects.toBe(violation);
   });
+
+  it('never looks up single use for an order the applicant may not finance', async () => {
+    const hasLiveApplicationForOrder = vi.fn(() => Promise.resolve(true));
+    const err = await failure(
+      useCase(
+        { vendor: VENDOR, buyerCustomerId: 'cust-bob' },
+        { hasLiveApplicationForOrder },
+      ).execute(customerPrincipal, command()),
+    );
+    // The buyer check wins over "already financed": the order's state is not revealed.
+    expect(err).toMatchObject({ status: 422, code: 'ORDER_NOT_FOR_APPLICANT' });
+    expect(hasLiveApplicationForOrder).not.toHaveBeenCalled();
+  });
+
+  it('refuses an order reference on a BORROWER-mode product (422), without a lookup', async () => {
+    const hasLiveApplicationForOrder = vi.fn(() => Promise.resolve(false));
+    const insert = vi.fn();
+    const err = await failure(
+      useCase(null, {
+        hasLiveApplicationForOrder,
+        insert,
+        productWithCurrentVersion: () =>
+          Promise.resolve({
+            product: { id: 'prod-1', status: 'ACTIVE' },
+            version: {
+              id: 'ver-1',
+              currency: 'NGN',
+              min_principal: 1n,
+              max_principal: 1_000_000_000n,
+              min_term: 1,
+              max_term: 24,
+              disbursement_mode: 'BORROWER',
+            },
+          }),
+      }).execute(customerPrincipal, {
+        ...command(),
+        payee: { name: 'Alice', account: '0123456789' },
+      }),
+    );
+    expect(err).toMatchObject({
+      status: 422,
+      code: 'ORDER_REFERENCE_NOT_ALLOWED',
+      details: { disbursementMode: 'BORROWER' },
+    });
+    expect(hasLiveApplicationForOrder).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+  });
 });

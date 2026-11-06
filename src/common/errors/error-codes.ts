@@ -34,6 +34,8 @@ export const ErrorCode = {
   ORDER_AMOUNT_EXCEEDED: 'ORDER_AMOUNT_EXCEEDED',
   /** The checkout order was placed by another customer than the applicant. */
   ORDER_NOT_FOR_APPLICANT: 'ORDER_NOT_FOR_APPLICANT',
+  /** An `externalOrderReference` sent for a BORROWER-mode (not checkout) product. */
+  ORDER_REFERENCE_NOT_ALLOWED: 'ORDER_REFERENCE_NOT_ALLOWED',
   IDEMPOTENCY_KEY_REQUIRED: 'IDEMPOTENCY_KEY_REQUIRED',
   IDEMPOTENCY_KEY_REUSED: 'IDEMPOTENCY_KEY_REUSED',
   UNSAFE_WEBHOOK_URL: 'UNSAFE_WEBHOOK_URL',
