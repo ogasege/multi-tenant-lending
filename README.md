@@ -57,7 +57,9 @@ COUNTER_OFFER, 1 DECLINE, computed with the real bureau and scorecard) and write
 
 **Two regions locally.** `make demo-cells` starts a second cell (eu-west-3) on port 3001, seeds
 both cells, prints the tenant directory and shows an EU-cell login for a Lagos lender answered
-with `307` to the Lagos cell.
+with `307` to the Lagos cell. Each cell has its own SQS domain-events queue and DLQ, as in AWS;
+`make verify-cell-queues` (also run by `make demo-cells`) checks that each cell's API and worker
+use their own queue and that neither worker has received the other cell's events.
 
 | Demo lender         | Slug                  | Country | Home cell  |
 | ------------------- | --------------------- | ------- | ---------- |

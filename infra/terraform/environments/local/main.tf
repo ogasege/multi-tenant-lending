@@ -21,6 +21,19 @@ module "messaging" {
   create_dlq_alarm = false
 }
 
+# Second cell (compose profile `two-cells`): its own queue + DLQ, exactly
+# as each cell in AWS instantiates the messaging module. Sharing one queue
+# would let the EU worker consume Lagos events it cannot find in its own
+# outbox. Name "<name>-eu" matches the LocalStack init hook and
+# EU_SQS_DOMAIN_EVENTS_QUEUE_URL in .env.example.
+module "messaging_eu" {
+  source = "../../modules/messaging"
+
+  name             = "${var.name}-eu"
+  kms_key_arn      = aws_kms_key.local.arn
+  create_dlq_alarm = false
+}
+
 module "storage" {
   source = "../../modules/storage"
 

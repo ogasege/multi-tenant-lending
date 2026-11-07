@@ -18,37 +18,56 @@ fi
 
 region="${AWS_DEFAULT_REGION:?AWS_DEFAULT_REGION must be set}"
 prefix="${RESOURCE_PREFIX:-lending-local}"
-queue="${prefix}-domain-events"
-dlq="${queue}-dlq"
+# The EU cell (compose profile `two-cells`) gets its OWN domain-events queue
+# and DLQ, as each cell does in AWS (one messaging module per cell). A
+# shared queue would let worker-eu receive Lagos events it cannot find in
+# its own outbox, delaying delivery and pushing messages towards the DLQ.
+# Created unconditionally: cheap, and the profile can be enabled later
+# without recreating LocalStack.
+eu_prefix="${EU_RESOURCE_PREFIX:-${prefix}-eu}"
 bucket="${prefix}-branding"
 directory_table="${prefix}-tenant-directory"
 
-echo "[init] region=${region} queue=${queue} dlq=${dlq} bucket=${bucket} table=${directory_table}"
+echo "[init] region=${region} bucket=${bucket} table=${directory_table}"
 
-# Dead-letter queue first: the main queue's redrive policy references it.
-# 14-day retention (the maximum) leaves time to triage poison messages.
-dlq_url="$(awslocal sqs create-queue --region "${region}" \
-  --queue-name "${dlq}" \
-  --attributes MessageRetentionPeriod=1209600 \
-  --query QueueUrl --output text)"
-dlq_arn="$(awslocal sqs get-queue-attributes --region "${region}" \
-  --queue-url "${dlq_url}" --attribute-names QueueArn \
-  --query Attributes.QueueArn --output text)"
-
-# Attributes go through a JSON file: RedrivePolicy is itself a JSON string,
-# and nesting it inside a shell argument is quoting-error-prone.
 attrs="$(mktemp)"
 trap 'rm -f "${attrs}"' EXIT
-cat >"${attrs}" <<JSON
+
+# create_domain_events_queue <cell name prefix>
+# Creates "<prefix>-domain-events" and its DLQ "<prefix>-domain-events-dlq"
+# with the same settings as the Terraform messaging module.
+create_domain_events_queue() {
+  local queue="$1-domain-events"
+  local dlq="${queue}-dlq"
+  local dlq_url dlq_arn
+  echo "[init] queue=${queue} dlq=${dlq}"
+
+  # Dead-letter queue first: the main queue's redrive policy references it.
+  # 14-day retention (the maximum) leaves time to triage poison messages.
+  dlq_url="$(awslocal sqs create-queue --region "${region}" \
+    --queue-name "${dlq}" \
+    --attributes MessageRetentionPeriod=1209600 \
+    --query QueueUrl --output text)"
+  dlq_arn="$(awslocal sqs get-queue-attributes --region "${region}" \
+    --queue-url "${dlq_url}" --attribute-names QueueArn \
+    --query Attributes.QueueArn --output text)"
+
+  # Attributes go through a JSON file: RedrivePolicy is itself a JSON
+  # string, and nesting it inside a shell argument is quoting-error-prone.
+  cat >"${attrs}" <<JSON
 {
   "VisibilityTimeout": "60",
   "MessageRetentionPeriod": "345600",
   "RedrivePolicy": "{\\"deadLetterTargetArn\\":\\"${dlq_arn}\\",\\"maxReceiveCount\\":\\"5\\"}"
 }
 JSON
-awslocal sqs create-queue --region "${region}" \
-  --queue-name "${queue}" \
-  --attributes "file://${attrs}" >/dev/null
+  awslocal sqs create-queue --region "${region}" \
+    --queue-name "${queue}" \
+    --attributes "file://${attrs}" >/dev/null
+}
+
+create_domain_events_queue "${prefix}"
+create_domain_events_queue "${eu_prefix}"
 
 if ! awslocal s3api head-bucket --bucket "${bucket}" >/dev/null 2>&1; then
   awslocal s3 mb "s3://${bucket}" --region "${region}"

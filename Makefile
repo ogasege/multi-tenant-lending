@@ -86,7 +86,9 @@ define eu_env
 export DATABASE_NAME="$${EU_DATABASE_NAME:-lending_eu}" \
   CELL_REGION="$${EU_CELL_REGION:-eu-west-3}" \
   CELL_API_BASE_URL="$${EU_CELL_API_BASE_URL:-http://localhost:3001}" \
-  REDIS_URL="$${REDIS_URL}/1";
+  REDIS_URL="$${REDIS_URL}/1"; \
+eu_queue="$${EU_SQS_DOMAIN_EVENTS_QUEUE_URL:-http://localstack:4566/000000000000/lending-local-eu-domain-events}"; \
+export SQS_DOMAIN_EVENTS_QUEUE_URL="$${eu_queue/localstack:4566/127.0.0.1:$${LOCALSTACK_HOST_PORT:-4566}}";
 endef
 
 .PHONY: seed
@@ -141,6 +143,12 @@ demo-cells: .env ## Two cells (Lagos :3000, EU :3001): seed both, show an EU log
 	  "http://localhost:$$(grep -E '^EU_API_HOST_PORT=' .env | cut -d= -f2)/v1/auth/login")"; \
 	  printf '%s\n' "$$headers" | grep -Ei '^(HTTP/|location:|x-tenant-cell:)'; \
 	  printf '%s\n' "$$headers" | grep -q '^HTTP/[0-9.]* 307' || { echo "expected 307" >&2; exit 1; }
+	@echo "Per-cell SQS isolation:"
+	@COMPOSE='$(COMPOSE)' scripts/verify-cell-queues.sh
+
+.PHONY: verify-cell-queues
+verify-cell-queues: ## Check each cell uses its own SQS queue + DLQ and consumed no other cell's events
+	@COMPOSE='$(COMPOSE)' scripts/verify-cell-queues.sh
 
 ##@ Tests (host, Testcontainers)
 

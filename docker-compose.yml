@@ -16,8 +16,10 @@
 # Profile `two-cells` (`make demo-cells`) adds a second, EU cell: api-eu on
 # port 3001 with its own database (lending_eu, same Postgres container) and
 # Redis logical DB 1, sharing the LocalStack tenant directory table with the
-# Lagos cell, to demo cross-cell 307 redirects. Locally both cells share the
-# Postgres roles, S3 bucket and SQS queue; in AWS each cell has its own.
+# Lagos cell, to demo cross-cell 307 redirects. Each cell has its own
+# domain-events SQS queue + DLQ (as in AWS), so one cell's worker never
+# consumes the other's events. Locally both cells share the Postgres roles
+# and S3 bucket; in AWS each cell has its own.
 
 name: tenmg-lending
 
@@ -307,6 +309,10 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:?set in .env}@redis:6379/1
       CELL_REGION: ${EU_CELL_REGION:-eu-west-3}
       CELL_API_BASE_URL: ${EU_CELL_API_BASE_URL:-http://localhost:3001}
+      # The cell's own queue. The API only validates it (env schema; the
+      # outbox relay that publishes runs in the worker), but every EU
+      # container must agree on it (see worker-eu).
+      SQS_DOMAIN_EVENTS_QUEUE_URL: &eu-queue-url ${EU_SQS_DOMAIN_EVENTS_QUEUE_URL:-http://localstack:4566/000000000000/lending-local-eu-domain-events}
     ports:
       - 127.0.0.1:${EU_API_HOST_PORT:-3001}:3000
     depends_on:
@@ -342,6 +348,10 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:?set in .env}@redis:6379/1
       CELL_REGION: ${EU_CELL_REGION:-eu-west-3}
       CELL_API_BASE_URL: ${EU_CELL_API_BASE_URL:-http://localhost:3001}
+      # WHY its own queue: on the shared Lagos queue this worker would
+      # receive Lagos events, find them absent from its outbox and drop or
+      # delay them (they count towards the DLQ's 5 receives).
+      SQS_DOMAIN_EVENTS_QUEUE_URL: *eu-queue-url
     depends_on:
       migrate-eu:
         condition: service_completed_successfully
