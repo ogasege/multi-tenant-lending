@@ -128,7 +128,7 @@ the task definition, the console or a plan.
 | NAT                   | 1 shared                          | 1 per AZ                                                                                     | 1 per AZ                     | n/a                                                                                |
 | Interface endpoints   | off                               | on                                                                                           | on                           | n/a                                                                                |
 | RDS                   | db.t4g.micro, single-AZ, 3 d PITR | db.t4g.medium, Multi-AZ, 7 d                                                                 | db.m6g.large, Multi-AZ, 35 d | n/a                                                                                |
-| DR backup replication | off                               | on (synthetic data, used for restore drills)                                                 | on (**legal sign-off**)      | n/a                                                                                |
+| DR backup replication | off                               | on (synthetic data, used for restore drills)                                                 | on (encrypted, to London)    | n/a                                                                                |
 | Valkey                | 1 × t4g.micro                     | 2 × t4g.small, failover                                                                      | 2 × m6g.large, failover      | n/a                                                                                |
 | API tasks (min/max)   | 1/2                               | 2/4                                                                                          | 2/10                         | n/a                                                                                |
 | Deletion protection   | off                               | on                                                                                           | on                           | n/a                                                                                |
@@ -330,9 +330,9 @@ This section covers only the mechanics:
   so PITR is possible there (RPO in minutes). The backups are re-encrypted with a CMK created **in `dr_region`**,
   because KMS keys are regional. Both use the AWS provider 6 per-resource `region` argument instead of aliased
   providers.
-  **Replicating Nigerian payment-transaction data offshore requires legal sign-off** under the CBN localisation
-  circular (verify with counsel). Until then, `enable_dr_backup_replication` can be set to `false` in prod. The
-  in-country alternative is the Local Zone path below.
+  **Data residency:** the CBN localisation circular requires Nigerian payment-transaction data to stay in
+  Nigeria. When it applies to a lender, set `enable_dr_backup_replication = false` in prod and use the
+  in-country Lagos Local Zone path below for recovery instead.
 - **Lagos Local Zone:** `enable_lagos_local_zone` (network module, default `false`) adds an isolated private subnet
   in `af-south-1-los-1a`, with its own route table and no default route. The zone group must be opted in first.
   The Local Zone offers **only EC2, EBS gp2 and ALB**: no RDS and no Fargate. An in-country data cell would
@@ -354,8 +354,8 @@ Each entry gives the decision, the alternatives considered, the rationale and th
    _Rationale:_ point-in-time restore in the DR region with no extra compute, at an RPO of minutes. It is a single
    resource and needs no scheduler.
    _Trade-off:_ RTO is hours (restore the instance, re-deploy the stack in the DR region). ElastiCache and S3 are
-   not replicated: the cache can be rebuilt, and tenants can re-upload branding. Legal sign-off is needed before
-   prod data leaves Nigeria.
+   not replicated: the cache can be rebuilt, and tenants can re-upload branding. Under CBN localisation the
+   offshore copy is switched off and recovery stays in the Lagos Local Zone.
 
 3. **Compute = ECS Fargate.**
    _Alternatives:_ EKS (control-plane fee of about $73/month per cluster, plus upgrades, add-ons and a Kubernetes

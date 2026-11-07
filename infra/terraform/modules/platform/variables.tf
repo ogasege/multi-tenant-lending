@@ -88,7 +88,7 @@ variable "db_backup_retention_period" {
 }
 
 variable "enable_dr_backup_replication" {
-  description = "Replicate RDS automated backups to dr_region (legal sign-off needed for Nigerian payment data, see README)."
+  description = "Replicate RDS automated backups to dr_region (false for lenders under CBN data localisation, see README)."
   type        = bool
 }
 

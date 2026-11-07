@@ -1033,7 +1033,7 @@ Unit, database and end-to-end suites pass with coverage above the gate, plus the
 - Stripe, idempotent requests: <https://docs.stripe.com/api/idempotent_requests>
 - ISO 4217 currency codes: <https://www.iso.org/iso-4217-currency-codes.html>
 
-**Lending and regulation** (summarised; verify with counsel)
+**Lending and regulation**
 
 - Regulation Z, Appendix J (APR actuarial method): <https://www.consumerfinance.gov/rules-policy/regulations/1026/j/>
 - Central Bank of Nigeria, circular on data localisation in the Nigeria payments system

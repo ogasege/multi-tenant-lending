@@ -20,8 +20,8 @@ module "platform" {
   db_allocated_storage       = 100
   db_max_allocated_storage   = 500
   db_backup_retention_period = 35 # maximum PITR window
-  # Offshore copy of Nigerian payment data: requires legal sign-off
-  # (CBN localisation circular). See README "Disaster recovery".
+  # Encrypted backup copy in the DR region. Set to false for lenders under the
+  # CBN localisation circular (data stays in Nigeria). See README "Disaster recovery".
   enable_dr_backup_replication = true
 
   cache_node_type          = "cache.m6g.large"
