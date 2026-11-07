@@ -94,3 +94,14 @@ variable "secret_recovery_window_in_days" {
   type        = number
   default     = 30
 }
+
+variable "auth_token_version" {
+  description = "Version of the Valkey AUTH token. Write-only values are only (re)written when this changes: bump it to rotate (ROTATE strategy keeps the old token valid until a later SET)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.auth_token_version >= 1 && floor(var.auth_token_version) == var.auth_token_version
+    error_message = "auth_token_version must be a positive integer."
+  }
+}

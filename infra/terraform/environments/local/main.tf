@@ -31,15 +31,17 @@ module "storage" {
 }
 
 # Same secret shape as the cloud (JSON keys) so the secrets-loading code
-# path can be integration-tested. Values are generated, never committed.
-resource "random_password" "local" {
+# path can be integration-tested. Values are generated, never committed,
+# and - as in the cloud - ephemeral + write-only, so they are not in the
+# local state file either.
+ephemeral "random_password" "local" {
   for_each = toset(["jwt_secret", "bvn_hmac_key"])
 
   length  = 64
   special = false
 }
 
-resource "random_bytes" "data_encryption_key" {
+ephemeral "random_bytes" "data_encryption_key" {
   length = 32
 }
 
@@ -52,11 +54,13 @@ resource "aws_secretsmanager_secret" "app" {
 
 resource "aws_secretsmanager_secret_version" "app" {
   secret_id = aws_secretsmanager_secret.app.id
-  secret_string = jsonencode({
-    jwt_secret          = random_password.local["jwt_secret"].result
-    bvn_hmac_key        = random_password.local["bvn_hmac_key"].result
-    data_encryption_key = random_bytes.data_encryption_key.base64
+  secret_string_wo = jsonencode({
+    jwt_secret          = ephemeral.random_password.local["jwt_secret"].result
+    bvn_hmac_key        = ephemeral.random_password.local["bvn_hmac_key"].result
+    data_encryption_key = ephemeral.random_bytes.data_encryption_key.base64
   })
+  # Constant: LocalStack state is throwaway (make clean recreates it).
+  secret_string_wo_version = 1
 }
 
 # Tenant directory (global control plane). LocalStack gets a

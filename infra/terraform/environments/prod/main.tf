@@ -28,6 +28,9 @@ module "platform" {
   cache_num_nodes          = 2
   cache_automatic_failover = true
 
+  # One-time switch for the move to write-only secrets (see README).
+  preserve_existing_app_secret = var.preserve_existing_app_secret
+
   image_reference            = var.image_reference
   migrations_image_reference = var.migrations_image_reference
 

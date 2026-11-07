@@ -4,6 +4,6 @@ output "cell_hostnames" {
 }
 
 output "health_check_ids" {
-  description = "Map of cell region to its Route 53 health check ID."
+  description = "Map of cell region to its Route 53 health check ID (empty when enable_health_checks = false)."
   value       = { for r, hc in aws_route53_health_check.cell : r => hc.id }
 }

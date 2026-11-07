@@ -47,6 +47,17 @@ variable "github_repository" {
   }
 }
 
+variable "github_deploy_workflow" {
+  description = "Workflow file (in .github/workflows/) that runs plans and applies; part of the OIDC subject the CI roles trust."
+  type        = string
+  default     = "infra.yml"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]+\\.ya?ml$", var.github_deploy_workflow))
+    error_message = "github_deploy_workflow must be a bare workflow file name such as infra.yml."
+  }
+}
+
 variable "environments" {
   description = "Environments (GitHub Environments of the same name) that get an apply role in THIS account. With one account per env, pass just that env."
   type        = set(string)

@@ -38,7 +38,11 @@ resource "aws_cloudwatch_log_group" "slow_log" {
 # AUTH token: 64 alphanumerics (ElastiCache allows 16-128 printable
 # chars but forbids @, " and /; alphanumerics sidestep URL escaping in
 # REDIS_URL entirely).
-resource "random_password" "auth_token" {
+# Ephemeral (Terraform >= 1.11): never in plan or state. The SAME value
+# is written in the same run to the replication group (auth_token_wo)
+# and the secret (secret_string_wo), because both write-only arguments
+# are versioned by the one auth_token_version variable.
+ephemeral "random_password" "auth_token" {
   length  = 64
   special = false
 }
@@ -46,6 +50,10 @@ resource "random_password" "auth_token" {
 # Valkey rather than Redis OSS: wire-compatible with ioredis, Linux
 # Foundation licensed, and ElastiCache prices Valkey ~20% below Redis OSS.
 resource "aws_elasticache_replication_group" "this" {
+  # checkov only recognises the legacy auth_token argument; the token IS
+  # set, via write-only auth_token_wo (kept out of state), and TLS is
+  # required below.
+  #checkov:skip=CKV_AWS_31:AUTH token set via write-only auth_token_wo; transit encryption required
   replication_group_id = local.id
   description          = "Rate limiting, idempotency fast-path and branding cache for ${var.name}"
   engine               = "valkey"
@@ -65,7 +73,8 @@ resource "aws_elasticache_replication_group" "this" {
   # TLS required (not "preferred"): plaintext clients are refused.
   transit_encryption_enabled = true
   transit_encryption_mode    = "required"
-  auth_token                 = random_password.auth_token.result
+  auth_token_wo              = ephemeral.random_password.auth_token.result
+  auth_token_wo_version      = var.auth_token_version
   # ROTATE keeps old+new tokens valid during a token change so running
   # tasks are not disconnected mid-deploy.
   auth_token_update_strategy = "ROTATE"
@@ -101,10 +110,22 @@ resource "aws_secretsmanager_secret" "this" {
 
 # The whole URL is the secret (it embeds the token), so the app gets a
 # single REDIS_URL from Secrets Manager via the JSON key "url".
+# Write-only: state keeps only the version number.
 resource "aws_secretsmanager_secret_version" "this" {
   secret_id = aws_secretsmanager_secret.this.id
-  secret_string = jsonencode({
-    auth_token = random_password.auth_token.result
-    url        = "rediss://:${random_password.auth_token.result}@${aws_elasticache_replication_group.this.primary_endpoint_address}:6379"
+  secret_string_wo = jsonencode({
+    auth_token = ephemeral.random_password.auth_token.result
+    url        = "rediss://:${ephemeral.random_password.auth_token.result}@${aws_elasticache_replication_group.this.primary_endpoint_address}:6379"
   })
+  secret_string_wo_version = var.auth_token_version
+
+  lifecycle {
+    # A replaced replication group is created with a fresh token, but this
+    # resource would not re-send its write-only value (version unchanged)
+    # and the secret would hold a dead token. Replacing this version too
+    # writes the token generated in that same run. `.id` (not the whole
+    # resource) so in-place updates of the group do not trigger it; the id
+    # is unknown while the group is being replaced, which counts as a change.
+    replace_triggered_by = [aws_elasticache_replication_group.this.id]
+  }
 }

@@ -44,11 +44,11 @@ output "worker_role_name" {
 }
 
 output "app_role_secret_arn" {
-  description = "ARN of the secret holding the lending_app password (JSON key password)."
+  description = "ARN of the secret holding the lending_app password (JSON keys username, password)."
   value       = aws_secretsmanager_secret.role["app"].arn
 }
 
 output "worker_role_secret_arn" {
-  description = "ARN of the secret holding the lending_worker password (JSON key password)."
+  description = "ARN of the secret holding the lending_worker password (JSON keys username, password)."
   value       = aws_secretsmanager_secret.role["worker"].arn
 }

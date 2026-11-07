@@ -1,4 +1,16 @@
-# Terraform quality gates (every PR touching infra) and gated applies.
+# Terraform quality gates (every PR touching infra), a reviewer-gated
+# non-prod plan, and gated applies.
+#
+# Credential model (bootstrap/ci_roles.tf):
+#   * fmt / validate / test / tflint / checkov: NO cloud credentials, NO
+#     backend (-backend=false). They run unreviewed PR code, so they get
+#     nothing worth stealing.
+#   * plan: bound to the `plan` GitHub Environment (required reviewers),
+#     so the OIDC sub is repo:<repo>:environment:plan:... and only then
+#     can it read non-prod state.
+#   * apply: bound to dev/staging/prod Environments, push to main only;
+#     the apply roles also require ref=refs/heads/main and this workflow
+#     file (job_workflow_ref) inside the customised OIDC sub.
 #
 # Third-party actions are pinned by full commit SHA (tag in the comment)
 # so a moved or compromised tag cannot change what runs. Tool versions
@@ -27,7 +39,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  TF_VERSION: "1.10.3"
+  TF_VERSION: "1.11.4"
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
   WORKDIR: infra/terraform
@@ -69,7 +81,6 @@ jobs:
           - modules/ecs-service
           - modules/alb
           - modules/observability
-          - modules/platform
           - environments/dev
           - environments/staging
           - environments/prod
@@ -96,12 +107,16 @@ jobs:
       fail-fast: false
       matrix:
         dir:
+          - bootstrap
           - modules/messaging
           - modules/storage
           - modules/ecs-service
           - modules/directory
           - modules/security
           - modules/platform
+          - modules/database
+          - modules/cache
+          - modules/edge
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -151,15 +166,23 @@ jobs:
           bridgecrew/checkov:3.4.3@sha256:bfe9d70bb7f044aba49bd99675813445f106dee6072da583f51008cb667f3a63
           --config-file .checkov.yaml
 
-  # Speculative plan for non-prod on PRs. Uses the read-only plan role
-  # (OIDC sub = repo:<repo>:pull_request): non-prod state only, no
+  # Speculative plan for non-prod on PRs, only after a reviewer approves
+  # the `plan` Environment deployment. Reviewers approve CODE EXECUTION
+  # with non-prod state access: a plan runs the PR's Terraform and this
+  # workflow as changed by the PR, so read the diff (workflow, providers,
+  # data sources) first. The role is read-only: non-prod state only, no
   # secret values, no lock writes - hence -refresh=false -lock=false.
-  # Skipped until the bootstrap outputs are configured as repo vars.
+  # Same-repo PRs only (fork PRs never reach credentials). Skipped until
+  # the bootstrap outputs are set as repository variables (a job-level
+  # `if` cannot see Environment variables, so these are repo-level).
   plan:
     name: plan ${{ matrix.environment }}
     if: github.event_name == 'pull_request' && vars.AWS_PLAN_ROLE_ARN != '' && github.event.pull_request.head.repo.full_name == github.repository
     needs: [fmt, validate, tflint, checkov, test]
     runs-on: ubuntu-24.04
+    # Binding to the Environment is what yields the OIDC context
+    # environment:plan that the plan role trusts (and pauses for review).
+    environment: plan
     permissions:
       contents: read
       id-token: write # OIDC token for AssumeRoleWithWebIdentity
@@ -196,11 +219,15 @@ jobs:
   # digest promoted through each (IMAGE_REFERENCE is set per GitHub
   # Environment by the release pipeline). Each job is bound to a GitHub
   # Environment, which is what makes the OIDC sub
-  # repo:<repo>:environment:<env> that the per-env apply role trusts.
-  # prod's Environment has required reviewers => human approval gate.
+  # repo:<repo>:environment:<env>:ref:refs/heads/main:job_workflow_ref:
+  # <repo>/.github/workflows/infra.yml@refs/heads/main that the per-env
+  # apply role trusts. Environments allow deployments from main only;
+  # prod's has required reviewers => human approval gate.
   apply:
     name: apply ${{ matrix.environment }}
-    if: github.event_name == 'push' && vars.INFRA_APPLY_ENABLED == 'true'
+    # Explicit ref check: the trigger already limits pushes to main, but
+    # this keeps a future trigger (workflow_dispatch, tags) from applying.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.INFRA_APPLY_ENABLED == 'true'
     needs: [fmt, validate, tflint, checkov, test]
     runs-on: ubuntu-24.04
     environment: ${{ matrix.environment }}
@@ -242,12 +269,20 @@ jobs:
         working-directory: ${{ env.WORKDIR }}/environments/${{ matrix.environment }}
       # Release order: (1) migrations image already built + pushed by
       # the app pipeline (db/Dockerfile, tagged by git SHA, referenced by
-      # digest); (2) register ONLY the new migrate task definition (plus
-      # its dependencies on first deploy) and run it to exit 0; (3) only
-      # then roll api/worker. New code never meets an old schema.
-      - name: Register migrate task definition
+      # digest); (2) register ONLY the new migrate task definition and
+      # the DB role password secrets (plus their dependencies on first
+      # deploy) and run migrations to exit 0; (3) only then roll
+      # api/worker. New code never meets an old schema.
+      # The role secrets are write-only (never in state) and are written
+      # here, BEFORE migrations, so the Flyway beforeMigrate callback
+      # sets the same passwords in Postgres that api/worker will read
+      # (first deploy and role_password_version bumps alike).
+      - name: Register migrate task definition and DB role secrets
         working-directory: ${{ env.WORKDIR }}/environments/${{ matrix.environment }}
-        run: terraform apply -auto-approve -no-color -target='module.platform.module.ecs.aws_ecs_task_definition.this["migrate"]'
+        run: >
+          terraform apply -auto-approve -no-color
+          -target='module.platform.module.ecs.aws_ecs_task_definition.this["migrate"]'
+          -target='module.platform.module.database.aws_secretsmanager_secret_version.role'
       - name: Run Flyway migrations and wait for exit code 0
         working-directory: ${{ env.WORKDIR }}/environments/${{ matrix.environment }}
         run: |

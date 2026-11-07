@@ -76,3 +76,20 @@ variable "platform_admin_cidrs" {
     error_message = "platform_admin_cidrs must be IPv4 CIDRs, e.g. 203.0.113.0/24."
   }
 }
+
+variable "app_secret_version" {
+  description = "Version of the application secret (JWT_SECRET, BVN_HMAC_KEY, DATA_ENCRYPTION_KEY). Bumping it writes NEW keys: do so only once the app supports a dual-key window (old ciphertext and BVN hashes must stay readable)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.app_secret_version >= 1 && floor(var.app_secret_version) == var.app_secret_version
+    error_message = "app_secret_version must be a positive integer."
+  }
+}
+
+variable "preserve_existing_app_secret" {
+  description = "One-time migration switch: when the write-only secret version is first applied to an environment that already has an application secret, re-write the current value instead of generating new keys. Set true for that one apply, then back to false."
+  type        = bool
+  default     = false
+}

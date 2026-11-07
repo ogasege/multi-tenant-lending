@@ -194,6 +194,7 @@ module "security" {
   platform_admin_cidrs           = var.platform_admin_cidrs
   log_retention_in_days          = var.log_retention_in_days
   secret_recovery_window_in_days = var.secret_recovery_window_in_days
+  preserve_existing_app_secret   = var.preserve_existing_app_secret
 }
 
 module "network" {

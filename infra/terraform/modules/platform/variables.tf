@@ -362,3 +362,9 @@ variable "repayment_max_backdate_days" {
     error_message = "repayment_max_backdate_days must be an integer between 0 and 31."
   }
 }
+
+variable "preserve_existing_app_secret" {
+  description = "One-time migration to write-only secrets: re-write the existing application secret (JWT/BVN HMAC/DEK) instead of generating new keys. Set true for the first apply after upgrading an already-deployed environment, then false."
+  type        = bool
+  default     = false
+}

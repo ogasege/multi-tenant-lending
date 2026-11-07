@@ -1,10 +1,12 @@
 locals {
   identifier = "${var.name}-postgres"
 
-  # Runtime login roles. The passwords are generated here, stored in
-  # Secrets Manager, and applied to the database by the migrations task
-  # (Flyway callback db/callbacks/beforeMigrate.sql) - Terraform never connects to Postgres, so
-  # no DB provider or network path from CI into the VPC is needed.
+  # Runtime login roles. The passwords are generated here (ephemeral,
+  # never in state), written to Secrets Manager, and applied to the
+  # database by the migrations task (Flyway callback
+  # db/callbacks/beforeMigrate.sql) - Terraform never connects to
+  # Postgres, so no DB provider or network path from CI into the VPC is
+  # needed.
   db_roles = {
     app    = var.app_role_name
     worker = var.worker_role_name
@@ -251,9 +253,14 @@ resource "aws_db_instance_automated_backups_replication" "dr" {
 # Runtime role credentials (lending_app, lending_worker)
 # ---------------------------------------------------------------------
 
+# Ephemeral (Terraform >= 1.11): the password exists only in memory for
+# the run that writes it and never reaches plan or state. A new value is
+# generated on every run, but it is only WRITTEN when
+# role_password_version changes (or the secret version is created), so
+# steady-state applies are no-ops.
 # special = false: avoids URL/connection-string escaping bugs; 40 chars
 # of [A-Za-z0-9] is still ~238 bits of entropy.
-resource "random_password" "role" {
+ephemeral "random_password" "role" {
   for_each = local.db_roles
 
   length  = 40
@@ -272,15 +279,21 @@ resource "aws_secretsmanager_secret" "role" {
   recovery_window_in_days = var.secret_recovery_window_in_days
 }
 
+# Write-only: secret_string_wo is sent to Secrets Manager and discarded;
+# state holds only the version number. Only the password is stored: host
+# and port reach tasks as plain environment variables (DATABASE_HOST),
+# and keeping them here would go stale because write-only values are not
+# re-sent unless the version changes.
+# Rotation: bump role_password_version. The pipeline writes the secret
+# (targeted apply) BEFORE running migrations, and the Flyway beforeMigrate
+# callback ALTERs the roles to the new value, so Postgres follows.
 resource "aws_secretsmanager_secret_version" "role" {
   for_each = local.db_roles
 
   secret_id = aws_secretsmanager_secret.role[each.key].id
-  secret_string = jsonencode({
+  secret_string_wo = jsonencode({
     username = each.value
-    password = random_password.role[each.key].result
-    host     = aws_db_instance.this.address
-    port     = aws_db_instance.this.port
-    dbname   = var.database_name
+    password = ephemeral.random_password.role[each.key].result
   })
+  secret_string_wo_version = var.role_password_version
 }

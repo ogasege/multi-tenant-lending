@@ -6,8 +6,12 @@ locals {
 # One HTTPS health check per cell against its readiness endpoint (DB +
 # Redis reachable). A failing check removes that cell from geolocation
 # answers so Route 53 falls back to the broader rule / default.
+# Prod tier only by default: Route 53 health checks have random IDs and
+# no tag-based authorisation, so their IAM actions cannot be scoped per
+# environment. Only the prod apply role holds them (bootstrap); non-prod
+# tiers rely on alias evaluate_target_health (ALB target health) alone.
 resource "aws_route53_health_check" "cell" {
-  for_each = var.cells
+  for_each = var.enable_health_checks ? var.cells : {}
 
   fqdn              = "${each.key}.${var.api_domain}"
   type              = "HTTPS"
@@ -56,7 +60,7 @@ resource "aws_route53_record" "geo" {
   name            = var.api_domain
   type            = "A"
   set_identifier  = each.key
-  health_check_id = aws_route53_health_check.cell[each.value.region].id
+  health_check_id = var.enable_health_checks ? aws_route53_health_check.cell[each.value.region].id : null
 
   geolocation_routing_policy {
     continent = each.value.continent
@@ -79,7 +83,7 @@ resource "aws_route53_record" "geo_default" {
   name            = var.api_domain
   type            = "A"
   set_identifier  = "default"
-  health_check_id = aws_route53_health_check.cell[var.default_region].id
+  health_check_id = var.enable_health_checks ? aws_route53_health_check.cell[var.default_region].id : null
 
   geolocation_routing_policy {
     country = "*"

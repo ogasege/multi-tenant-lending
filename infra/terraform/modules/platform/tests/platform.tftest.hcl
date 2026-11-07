@@ -7,21 +7,34 @@
 # wiring (each child module has, or does not need, its own tests) and
 # needs no registry download for the VPC module.
 
-mock_provider "aws" {
-  mock_data "aws_region" {
-    defaults = {
-      region = "af-south-1"
-    }
-  }
+# REAL providers, offline: Terraform 1.11 mock providers cannot mock
+# ephemeral resources, and the child modules have some (write-only
+# secrets). Every child module is overridden, credential checks are
+# skipped and this module's identity data sources are overridden, so a
+# plan makes no API call. random generates values locally.
+provider "aws" {
+  region                      = "af-south-1"
+  access_key                  = "test"
+  secret_key                  = "test"
+  skip_credentials_validation = true
+  skip_requesting_account_id  = true
+  skip_metadata_api_check     = true
+  skip_region_validation      = true
+}
 
-  mock_data "aws_caller_identity" {
-    defaults = {
-      account_id = "111111111111"
-    }
+override_data {
+  target = data.aws_region.current
+  values = {
+    region = "af-south-1"
   }
 }
 
-mock_provider "random" {}
+override_data {
+  target = data.aws_caller_identity.current
+  values = {
+    account_id = "111111111111"
+  }
+}
 
 override_module {
   target = module.security

@@ -6,13 +6,24 @@
 # access keys stored as GitHub secrets. AWS validates GitHub's OIDC
 # signing chain itself, so no thumbprint pinning is needed.
 #
-# Trust model:
-#   github-<project>-plan          sub = repo:<repo>:pull_request
-#     read-only, NON-PROD state only, no secret values, no lock writes
-#   github-<project>-apply-<env>   sub = repo:<repo>:environment:<env>
-#     only reachable from a job bound to that GitHub Environment (prod
-#     has required reviewers), only its own state key / names / secrets,
-#     only roles carrying the <env> boundary, ABAC on Environment tag.
+# Trust model. The repository's OIDC subject template is customised
+# (README: `gh api ... /actions/oidc/customization/sub`) to
+#   repo:<repo>:<context>:ref:<ref>:job_workflow_ref:<workflow>@<ref>
+# so branch and workflow file are part of `sub` itself. IAM evaluates
+# `sub`/`aud` for every OIDC provider; we deliberately do not depend on
+# which other GitHub claims IAM exposes as separate condition keys.
+#
+#   github-<project>-plan          context = environment:plan
+#     only from a job bound to the `plan` GitHub Environment (required
+#     reviewers) in infra.yml on a PR merge ref. Read-only, NON-PROD
+#     state only, no secret values, no lock writes. Unreviewed PR jobs
+#     run no backend at all and assume no role.
+#   github-<project>-apply-<env>   context = environment:<env>
+#     only from a job bound to that GitHub Environment, on refs/heads/main,
+#     in the deploy workflow (infra.yml) as it exists on main - a PR or
+#     another branch/workflow that names `environment: prod` gets no
+#     credentials. Only its own state key / names / secrets, only roles
+#     carrying the <env> boundary, ABAC on Environment tag.
 #
 # Production recommendation: one AWS account per environment under AWS
 # Organizations with SCPs - the account is then the hard boundary and
@@ -80,6 +91,25 @@ locals {
   ]
   arn  = "arn:${local.partition}"
   acct = local.account_id
+
+  # Deploy workflow as job_workflow_ref renders it (<owner>/<repo>/<path>).
+  deploy_workflow = "${var.github_repository}/.github/workflows/${var.github_deploy_workflow}"
+
+  # PR jobs run on refs/pull/<n>/merge; the number is GitHub-assigned and
+  # cannot contain ":", so the wildcards cannot splice in another context.
+  plan_subject = join(":", [
+    "repo:${var.github_repository}:environment:plan",
+    "ref:refs/pull/*/merge",
+    "job_workflow_ref:${local.deploy_workflow}@refs/pull/*/merge",
+  ])
+
+  apply_subjects = {
+    for e in var.environments : e => join(":", [
+      "repo:${var.github_repository}:environment:${e}",
+      "ref:refs/heads/main",
+      "job_workflow_ref:${local.deploy_workflow}@refs/heads/main",
+    ])
+  }
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
@@ -90,7 +120,7 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 # ---------------------------------------------------------------------
-# PR plan role (read-only, non-prod)
+# Reviewer-gated plan role (read-only, non-prod)
 # ---------------------------------------------------------------------
 
 data "aws_iam_policy_document" "plan_trust" {
@@ -108,28 +138,33 @@ data "aws_iam_policy_document" "plan_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Exact match: PRs of THIS repo only (fork PRs get no OIDC token for
-    # pull_request events by default either).
+    # Non-prod state holds data a malicious PR could exfiltrate, so a
+    # bare `pull_request` subject is NOT trusted: only a job that a
+    # reviewer released through the `plan` Environment. StringLike only
+    # for the PR number (see local.plan_subject).
     condition {
-      test     = "StringEquals"
+      test     = "StringLike"
       variable = "${local.github_host}:sub"
-      values   = ["repo:${var.github_repository}:pull_request"]
+      values   = [local.plan_subject]
     }
   }
 }
 
 resource "aws_iam_role" "plan" {
   name                 = "${local.ci_prefix}-plan"
-  description          = "PR terraform plan (read-only, non-prod state) for ${var.github_repository}"
+  description          = "Reviewer-gated PR terraform plan (read-only, non-prod state) for ${var.github_repository}"
   assume_role_policy   = data.aws_iam_policy_document.plan_trust.json
   max_session_duration = 3600
 }
 
-# PR plans run `terraform plan -refresh=false -lock=false`: they diff
-# the proposed config against the last applied state and read nothing
-# else from AWS except the few data sources (AZ list). That is why this
-# role needs no ReadOnlyAccess, no GetSecretValue and no lock-file
-# writes. Real drift detection happens in the gated apply job.
+# Plans run `terraform plan -refresh=false -lock=false`: they diff the
+# proposed config against the last applied state and read nothing else
+# from AWS except the few data sources (AZ list). That is why this role
+# needs no ReadOnlyAccess, no GetSecretValue and no lock-file writes.
+# Real drift detection happens in the gated apply job. State still
+# matters: with write-only secrets most generated values are gone from
+# it, but it remains the system of record for the infrastructure, hence
+# the reviewer gate (a plan executes the PR's configuration).
 data "aws_iam_policy_document" "plan" {
   #checkov:skip=CKV_AWS_356:ec2:DescribeAvailabilityZones has no resource-level permissions
 
@@ -196,10 +231,14 @@ data "aws_iam_policy_document" "apply_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # Environment + main + deploy workflow in one exact match: Environment
+    # deployment-branch rules (main only) are the GitHub-side control;
+    # this is the AWS-side one, so a misconfigured Environment still
+    # cannot hand prod credentials to another branch or workflow.
     condition {
       test     = "StringEquals"
       variable = "${local.github_host}:sub"
-      values   = ["repo:${var.github_repository}:environment:${each.key}"]
+      values   = [local.apply_subjects[each.key]]
     }
   }
 }
@@ -208,7 +247,7 @@ resource "aws_iam_role" "apply" {
   for_each = var.environments
 
   name                 = "${local.ci_prefix}-apply-${each.key}"
-  description          = "terraform apply for ${each.key} (GitHub Environment ${each.key})"
+  description          = "terraform apply for ${each.key} (GitHub Environment ${each.key}, main, ${var.github_deploy_workflow})"
   assume_role_policy   = data.aws_iam_policy_document.apply_trust[each.key].json
   max_session_duration = 3600
 }
@@ -817,10 +856,18 @@ locals {
 # Policy 5/5: Route 53 (global stack edge routing). Record changes are
 # limited to this tier's API names: api.<zone> / *.api.<zone> for prod,
 # api.<env>.<zone> / *.api.<env>.<zone> otherwise.
+#
+# Health checks: Route 53 has no tag-based authorisation (no
+# aws:ResourceTag / aws:RequestTag support) and health-check IDs are
+# random, so ABAC or name scoping is impossible. A dev role able to
+# Update/Delete health checks could disable prod failover. Therefore
+# ONLY the prod role manages health checks (the edge module creates them
+# for the prod tier only) and non-prod roles get an explicit Deny. The
+# production hard boundary remains one AWS account per environment.
 data "aws_iam_policy_document" "apply_dns" {
   for_each = var.environments
 
-  #checkov:skip=CKV_AWS_356:Route 53 health-check and change APIs lack resource-level permissions
+  #checkov:skip=CKV_AWS_356:route53:CreateHealthCheck (prod role only) has no resource-level permissions
   #checkov:skip=CKV_AWS_111:Record writes are limited by normalized record name to this tier
 
   statement {
@@ -845,16 +892,50 @@ data "aws_iam_policy_document" "apply_dns" {
     }
   }
 
-  statement {
-    sid = "HealthChecks"
-    actions = [
-      "route53:CreateHealthCheck",
-      "route53:UpdateHealthCheck",
-      "route53:DeleteHealthCheck",
-      "route53:GetHealthCheck",
-      "route53:ChangeTagsForResource",
-    ]
-    resources = ["*"]
+  # Prod only. CreateHealthCheck has no resource-level permissions; every
+  # other health-check action is limited to health-check ARNs.
+  dynamic "statement" {
+    for_each = each.key == "prod" ? [1] : []
+
+    content {
+      sid       = "CreateHealthChecks"
+      actions   = ["route53:CreateHealthCheck"]
+      resources = ["*"]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = each.key == "prod" ? [1] : []
+
+    content {
+      sid = "ManageHealthChecks"
+      actions = [
+        "route53:UpdateHealthCheck",
+        "route53:DeleteHealthCheck",
+        "route53:GetHealthCheck",
+        "route53:ChangeTagsForResource",
+        "route53:ListTagsForResource",
+      ]
+      resources = ["${local.arn}:route53:::healthcheck/*"]
+    }
+  }
+
+  # Non-prod: explicit Deny, so a broader policy attached later still
+  # cannot touch (prod) health checks from a dev/staging pipeline.
+  dynamic "statement" {
+    for_each = each.key == "prod" ? [] : [1]
+
+    content {
+      sid    = "DenyHealthCheckWrites"
+      effect = "Deny"
+      actions = [
+        "route53:CreateHealthCheck",
+        "route53:UpdateHealthCheck",
+        "route53:DeleteHealthCheck",
+        "route53:ChangeTagsForResource",
+      ]
+      resources = ["*"]
+    }
   }
 }
 

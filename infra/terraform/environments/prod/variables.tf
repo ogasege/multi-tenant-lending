@@ -142,3 +142,9 @@ variable "checkout_orders_provider" {
     error_message = "checkout_orders_provider must name a real provider in prod; \"mock\" is refused by the app."
   }
 }
+
+variable "preserve_existing_app_secret" {
+  description = "One-time migration to write-only secrets: re-write the existing application secret (JWT/BVN HMAC/DEK) instead of generating new keys. Set true for the first apply after upgrading an already-deployed environment, then false."
+  type        = bool
+  default     = false
+}

@@ -24,4 +24,8 @@ module "edge" {
   api_domain     = var.api_domain
   cells          = var.cells
   default_region = var.aws_region
+
+  # Health checks only in prod: their IAM actions cannot be scoped to an
+  # environment, so only the prod apply role may create/update/delete them.
+  enable_health_checks = var.environment == "prod"
 }

@@ -8,7 +8,7 @@ customer-managed KMS keys.
 
 ```
 infra/terraform/
-├── .terraform-version          1.10.3 (tfenv / CI)
+├── .terraform-version          1.11.4 (tfenv / CI; write-only secrets need ≥ 1.11)
 ├── .tflint.hcl                 terraform + aws rulesets, recommended preset
 ├── .checkov.yaml               no global skips: every exception is inline with a reason
 ├── bootstrap/                  state bucket + KMS, GitHub OIDC, CI roles, per-env permission boundaries (local state)
@@ -159,11 +159,15 @@ It changes rarely and is applied by a human. Keep `terraform.tfstate` in a secur
 run `terraform init -migrate-state` afterwards with a `backend "s3"` block pointing at
 `key = "lending/bootstrap/terraform.tfstate"`.
 
-GitHub setup:
+GitHub setup (details and the exact `gh api` call in [bootstrap/README.md](bootstrap/README.md#github-configuration-required-before-the-ci-roles-work)):
+* **OIDC subject template** customised to `repo`, `context`, `ref`, `job_workflow_ref` (repository level). The CI
+  roles match on it; until it is set, every role assumption fails closed.
 * Repository variables: `AWS_PLAN_ROLE_ARN`, `TF_STATE_BUCKET`, `TFVARS_DEV`, `TFVARS_STAGING`,
   `INFRA_APPLY_ENABLED=true`.
-* Environments `dev`, `staging` and `prod`, each with variables `AWS_APPLY_ROLE_ARN`, `TFVARS` and
-  `IMAGE_REFERENCE`. Give **prod** required reviewers.
+* Environment `plan` with required reviewers (PR plans wait for approval).
+* Environments `dev`, `staging` and `prod`, each with deployment branches limited to **`main`** and variables
+  `AWS_APPLY_ROLE_ARN`, `TFVARS`, `IMAGE_REFERENCE` and `MIGRATIONS_IMAGE_REFERENCE`. Give **prod** required
+  reviewers (prevent self-review).
 
 ### 2. An environment
 
@@ -181,9 +185,11 @@ terraform apply
 1. **Build and push the migrations image.** This is done by the app pipeline: `db/Dockerfile`, context `db/`,
    tagged with the git SHA and pushed to `<name>/lending-migrations`. Its digest becomes
    `MIGRATIONS_IMAGE_REFERENCE`. The app image works the same way and becomes `IMAGE_REFERENCE`.
-2. **Register only the new migrate task definition** with
-   `terraform apply -target='module.platform.module.ecs.aws_ecs_task_definition.this["migrate"]'`, then run it and
-   wait for **exit code 0**:
+2. **Register only the new migrate task definition and the DB role secrets** with
+   `terraform apply -target='module.platform.module.ecs.aws_ecs_task_definition.this["migrate"]'
+   -target='module.platform.module.database.aws_secretsmanager_secret_version.role'`, then run it and wait for
+   **exit code 0**. The role secrets are write-only, so they are written here, before the Flyway `beforeMigrate`
+   callback sets the same passwords in Postgres:
    ```bash
    aws ecs run-task --cluster lending-<env> --launch-type FARGATE \
      --task-definition "$(terraform output -raw migrate_task_definition_arn)" \
@@ -217,12 +223,19 @@ container must enable **`SERVICES=s3,sqs,dynamodb,kms,secretsmanager`**. The com
 
 ### Quality gates (what CI runs)
 
+Terraform **≥ 1.11** is required (write-only arguments). Without a local 1.11, use the pinned image, e.g.
+`docker run --rm -v "$PWD:/tf" -w /tf/<dir> -e TF_DATA_DIR=/tmp/tfdata hashicorp/terraform:1.11.4@sha256:5820b87995595425074f881500a037b0ccd41158d0d9b44d78f5f120612f2d3d <command>`
+(a container-local `TF_DATA_DIR` keeps host-OS providers in `.terraform/` untouched).
+
 ```bash
 terraform fmt -recursive -check
 for d in bootstrap global modules/* environments/*; do (cd $d && terraform init -backend=false && terraform validate); done
-(cd modules/messaging && terraform test); (cd modules/storage && terraform test); (cd modules/ecs-service && terraform test); (cd modules/directory && terraform test); (cd modules/security && terraform test); (cd modules/platform && terraform test)
-tflint --init && tflint --recursive --config "$PWD/.tflint.hcl"
-docker run --rm -v "$PWD:/tf" -w /tf bridgecrew/checkov:3.4.3 --config-file .checkov.yaml
+for d in bootstrap modules/messaging modules/storage modules/ecs-service modules/directory modules/security \
+         modules/platform modules/database modules/cache modules/edge; do (cd $d && terraform test); done
+docker run --rm -v "$PWD:/data" -w /data ghcr.io/terraform-linters/tflint:v0.65.0 --init
+docker run --rm -v "$PWD:/data" -w /data ghcr.io/terraform-linters/tflint:v0.65.0 --recursive --config /data/.tflint.hcl
+docker run --rm -v "$PWD:/tf" -w /tf bridgecrew/checkov:3.4.3@sha256:bfe9d70bb7f044aba49bd99675813445f106dee6072da583f51008cb667f3a63 --config-file .checkov.yaml
+actionlint ../../.github/workflows/infra.yml
 ```
 
 ## Multi-region cells & global routing
@@ -381,9 +394,28 @@ Each entry gives the decision, the alternatives considered, the rationale and th
    *Alternatives:* SSM Parameter Store SecureString (cheaper, but no native rotation or RDS integration); env vars
    in tfvars (secrets in git or CI); Vault (another system to run).
    *Rationale:* no human ever sees or pastes a secret. The master password is RDS-managed and rotates every 7 days.
-   *Trade-off:* with Terraform 1.10, `random_password` values live in state. The mitigations are a KMS-encrypted
-   state bucket, env-scoped state access and no state reads from PRs. Terraform ≥ 1.11 write-only arguments
-   (`secret_string_wo` with an ephemeral `random_password`) would remove this exposure and are the next upgrade.
+   **Generated secrets are not in state** (Terraform ≥ 1.11): `ephemeral "random_password"` / `ephemeral
+   "random_bytes"` feed write-only arguments, so the value exists only in memory during the run that writes it.
+   | Secret | How | In state? |
+   |---|---|---|
+   | RDS master password | `manage_master_user_password` (RDS generates, stores, rotates every 7 days) | no |
+   | `lending_app` / `lending_worker` passwords | ephemeral `random_password` → `secret_string_wo`, versioned by `role_password_version` | no |
+   | Valkey AUTH token + `REDIS_URL` | one ephemeral `random_password` → `auth_token_wo` **and** `secret_string_wo`, both versioned by `auth_token_version` | no |
+   | `JWT_SECRET`, `BVN_HMAC_KEY`, `DATA_ENCRYPTION_KEY` | ephemeral `random_password` / `random_bytes` → `secret_string_wo`, versioned by `app_secret_version` | no |
+   | LocalStack app secret | same pattern, constant version | no |
+
+   What state still holds: secret **ARNs and version numbers**, the KMS key IDs, endpoints and every non-secret
+   attribute. That is why state stays KMS-encrypted, env-scoped and readable from PRs only after reviewer approval.
+   Write-only values are written only when the resource is created or its `*_version` changes; a new ephemeral
+   value generated on other runs is discarded. Bumping a version **rotates**: role passwords follow via migrations
+   (the pipeline writes the secret before `flyway migrate`), the Valkey token uses the `ROTATE` strategy (old and new
+   valid), but app keys must not be bumped until the app supports a dual-key window.
+   *Moving an already-applied environment to write-only:* the first apply writes NEW role passwords and a new Valkey
+   token (safe, as above), and would generate NEW app keys. For an environment holding data encrypted with the DEK
+   or hashed with the BVN key, set `preserve_existing_app_secret = true` for that one apply (it re-writes the
+   current value, read ephemerally; needs the env apply role, so the PR plan for that env fails while it is on), then
+   set it back to `false`. Old values remain in state history (bucket versioning, 90 days): treat them as exposed and
+   rotate once dual-key support exists.
    App-key and role-password rotation needs app dual-key or reconnect support, and is a checkov-documented
    follow-up. Cost is about $0.40 per secret per month.
 
@@ -476,10 +508,10 @@ Each entry gives the decision, the alternatives considered, the rationale and th
 17. **State: S3 backend with `use_lockfile = true`, `encrypt = true`, and a separate key per env. No DynamoDB.**
     *Alternatives:* a DynamoDB lock table (the classic pattern, deprecated in the S3 backend since 1.11); HCP
     Terraform.
-    *Rationale:* S3 conditional writes give native locking from Terraform 1.10 (hence `required_version >=
-    1.10`), which means one fewer resource, IAM path and bill. The bucket is versioned, SSE-KMS with a dedicated
+    *Rationale:* S3 conditional writes give native locking from Terraform 1.10, which means one fewer resource, IAM
+    path and bill. (`required_version >= 1.11` is driven by write-only secrets, see 7.) The bucket is versioned, SSE-KMS with a dedicated
     CMK, BPA, TLS-only and deny-DeleteBucket. Bootstrap uses local state (chicken-and-egg).
-    *Trade-off:* every environment and CI must be on Terraform ≥ 1.10. Bootstrap state needs manual care.
+    *Trade-off:* every environment and CI must be on Terraform ≥ 1.11. Bootstrap state needs manual care.
 
 18. **dev, staging and prod, plus local.**
     *Alternatives:* dev and prod only (no prod-shaped rehearsal); ephemeral per-PR environments (expensive with
@@ -490,21 +522,33 @@ Each entry gives the decision, the alternatives considered, the rationale and th
     LocalStack test target, not a deployment environment.**
     *Trade-off:* staging costs a meaningful fraction of prod. It can be scaled down out of hours.
 
-19. **CI identity: GitHub OIDC, a read-only PR plan role, per-env apply roles, per-env permission boundaries and
-    ABAC.**
+19. **CI identity: GitHub OIDC with a customised subject, a reviewer-gated read-only plan role, main-and-workflow-bound
+    per-env apply roles, per-env permission boundaries and ABAC.**
     *Alternatives:* long-lived access keys in GitHub secrets (leak risk, no expiry); a single admin deploy role (one
     compromised workflow can change every environment); one apply role with `PowerUserAccess` (the original draft,
     rejected in security review, see below).
     *Rationale:*
-    * **Plan role** (`sub = repo:<repo>:pull_request`): reads **non-prod state only** (an explicit Deny on
-      `lending/prod/*`). It has **no** `secretsmanager:GetSecretValue`, no lock writes and no ReadOnlyAccess. PR
-      plans run `-refresh=false -lock=false`, so they diff the proposed config against the last applied state.
-      Drift detection happens in the gated apply job.
-    * **Apply roles** (`sub = repo:<repo>:environment:<env>`): only a job bound to that GitHub Environment can
-      assume one, and prod requires reviewers. Each role is limited to its own state key, its own
+    * **Subject template:** the repository's OIDC `sub` is customised to `repo`, `context`, `ref`,
+      `job_workflow_ref`, so branch and workflow are inside `sub`, the claim IAM always evaluates (setup in
+      `bootstrap/README.md`).
+    * **PR jobs without credentials:** fmt, validate, test, tflint and checkov run `-backend=false` and request no
+      OIDC token. A malicious PR therefore cannot read state.
+    * **Plan role** (`sub = repo:<repo>:environment:plan:ref:refs/pull/*/merge:job_workflow_ref:<repo>/.github/workflows/infra.yml@refs/pull/*/merge`):
+      only after a reviewer approves the `plan` Environment. Reads **non-prod state only** (an explicit Deny on
+      `lending/prod/*`). It has **no** `secretsmanager:GetSecretValue`, no lock writes and no ReadOnlyAccess. Plans
+      run `-refresh=false -lock=false`, so they diff the proposed config against the last applied state. Drift
+      detection happens in the gated apply job. Approval is approval to execute the PR's code with that access.
+    * **Apply roles** (`sub = repo:<repo>:environment:<env>:ref:refs/heads/main:job_workflow_ref:<repo>/.github/workflows/infra.yml@refs/heads/main`):
+      only a job bound to that GitHub Environment, on `main`, in the deploy workflow as committed to `main`, can
+      assume one. Environments allow deployments from `main` only and prod requires reviewers (GitHub side); the
+      trust policy enforces the same independently (AWS side). Each role is limited to its own state key, its own
       `lending-<env>/*` secrets, `lending-<env>-*` names and its own regions. **No managed admin or power-user
-      policy:** permissions are explicit per-service statements in four customer-managed policies (to stay under
+      policy:** permissions are explicit per-service statements in five customer-managed policies (to stay under
       the 6 KiB per-policy limit). The rendered sizes are 1.1 to 4.2 KiB, measured on LocalStack.
+    * **Route 53 health checks: prod role only.** Route 53 has no tag-based authorisation and health-check IDs are
+      random, so neither ABAC nor names can confine them; any role allowed `UpdateHealthCheck` could disable another
+      tier's failover. Non-prod roles have an explicit Deny, and the `global` stack creates health checks for the
+      prod tier only (non-prod relies on ALB `evaluate_target_health`).
     * **Privilege escalation is closed:**
       `iam:CreateRole/PutRolePolicy/PutRolePermissionsBoundary/UpdateAssumeRolePolicy/AttachRolePolicy` require
       `iam:PermissionsBoundary = lending-boundary-<env>`. `AttachRolePolicy` also requires `iam:PolicyARN` to be a
@@ -528,7 +572,11 @@ Each entry gives the decision, the alternatives considered, the rationale and th
     *Alternatives:* Terratest (Go, real resources, slow and costly); plan-JSON plus OPA (another language).
     *Rationale:* the tests are free, run in seconds and need no credentials. They assert encryption, BPA, DLQ
     redrive, TLS-only policies, WAF rule scope and the admin allow-list, the tenant-prefix guard, the secret split, container hardening and variable
-    validation. A few runs use `command = apply` **against the mock**, because Terraform 1.10 fills computed
+    validation, write-only secrets (nothing in `secret_string` / `auth_token`), and the rendered CI trust and DNS
+    policies. Terraform 1.11 mocks cannot mock ephemeral resources, so the bootstrap, security and platform tests
+    use the **real provider offline** (credential checks skipped, identity data sources overridden), which also
+    renders the IAM JSON for real. A few runs use
+    `command = apply` **against the mock**, because Terraform fills computed
     attributes such as ARNs only during apply. checkov has **no global skips**: each exception is an inline
     `#checkov:skip` with its reason.
     *Trade-off:* mocks prove the configuration, not AWS behaviour. LocalStack and a dev apply cover that.
@@ -580,7 +628,8 @@ Each entry gives the decision, the alternatives considered, the rationale and th
 | CKV2_AWS_64 | DR, directory, state and LocalStack KMS keys | the default root-delegation policy is intended; access is via IAM |
 | CKV_AWS_109/111/356 | key policies, ECR auth, Describe APIs, CI policies | `"*"` means "this key", or the API has no resource-level permissions; writes are name-, ABAC- or boundary-scoped |
 | CKV_AWS_290 | CI compute policy | writes are ABAC-, name- or region-scoped |
-| CKV_AWS_356/111 | CI DNS policy | Route 53 health-check APIs have no resource-level permissions; record writes are limited by normalized name |
+| CKV_AWS_356/111 | CI DNS policy | `route53:CreateHealthCheck` (prod role only) has no resource-level permissions; record writes are limited by normalized name |
+| CKV_AWS_31 | Valkey replication group | false positive: the AUTH token is set through write-only `auth_token_wo` (checkov reads only `auth_token`); TLS is `required` |
 | CKV_AWS_260, CKV_AWS_2, CKV_AWS_103 | ALB :80 | it only issues a 301 to HTTPS |
 | CKV_AWS_378 | target group | TLS terminates at the ALB; the hop is private and SG-restricted |
 | CKV_AWS_150 | ALB | deletion protection is per env (on in staging and prod) |
@@ -600,5 +649,7 @@ Each entry gives the decision, the alternatives considered, the rationale and th
 * Cross-region automated backup replication from af-south-1 to eu-west-2, and Valkey 8 and the m6g node types in
   af-south-1: check availability in the console before prod.
 * `DATA_ENCRYPTION_KEY` is produced as base64 of 32 random bytes. Confirm the app decodes it that way.
-* Rotation for app keys and role passwords; Terraform ≥ 1.11 write-only secrets; ECS Fargate ephemeral-storage CMK;
+* Rotation for app keys and role passwords (write-only versions exist; the app dual-key window does not);
+  confirm on the first apply that `replace_triggered_by` re-writes `REDIS_URL` when the Valkey group is replaced;
+  ECS Fargate ephemeral-storage CMK;
   OpenTelemetry tracing; CloudFront + OAC for logos.

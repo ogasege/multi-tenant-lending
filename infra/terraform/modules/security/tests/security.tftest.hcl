@@ -1,10 +1,38 @@
 # Unit tests: `terraform test` (from modules/security), no AWS access.
+#
+# REAL aws provider, offline: Terraform 1.11 mock providers cannot mock
+# ephemeral resources (this module has one), and plan-only runs make no
+# API calls once credentials checks are skipped and the identity data
+# sources are overridden. Bonus: KMS key policies render for real.
 
-mock_provider "aws" {
-  mock_data "aws_iam_policy_document" {
-    defaults = {
-      json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
-    }
+provider "aws" {
+  region                      = "af-south-1"
+  access_key                  = "test"
+  secret_key                  = "test"
+  skip_credentials_validation = true
+  skip_requesting_account_id  = true
+  skip_metadata_api_check     = true
+  skip_region_validation      = true
+}
+
+override_data {
+  target = data.aws_caller_identity.current
+  values = {
+    account_id = "111111111111"
+  }
+}
+
+override_data {
+  target = data.aws_region.current
+  values = {
+    region = "af-south-1"
+  }
+}
+
+override_data {
+  target = data.aws_partition.current
+  values = {
+    partition = "aws"
   }
 }
 
@@ -87,4 +115,52 @@ run "kms_keys_rotate" {
     condition     = alltrue([for k in values(aws_kms_key.this) : k.enable_key_rotation && !k.multi_region])
     error_message = "All CMKs must rotate and be single-region."
   }
+}
+
+run "app_secret_is_write_only" {
+  command = plan
+
+  assert {
+    condition     = aws_secretsmanager_secret_version.app.secret_string == null
+    error_message = "App keys must not be stored via secret_string (it lands in state)."
+  }
+
+  assert {
+    condition     = aws_secretsmanager_secret_version.app.secret_string_wo == null
+    error_message = "Write-only values must never appear in the plan."
+  }
+
+  assert {
+    condition     = aws_secretsmanager_secret_version.app.secret_string_wo_version == 1
+    error_message = "App secret must be versioned (default 1); bumping it rotates keys."
+  }
+
+}
+
+# One-time migration: plans offline too, because the secret id is
+# unknown until apply (the read is deferred, no API call at plan time).
+run "preserve_mode_keeps_write_only" {
+  command = plan
+
+  variables {
+    preserve_existing_app_secret = true
+  }
+
+  assert {
+    condition = (
+      aws_secretsmanager_secret_version.app.secret_string == null &&
+      aws_secretsmanager_secret_version.app.secret_string_wo_version == 1
+    )
+    error_message = "Preserving the existing value must still go through the write-only argument."
+  }
+}
+
+run "rejects_non_positive_app_secret_version" {
+  command = plan
+
+  variables {
+    app_secret_version = 0
+  }
+
+  expect_failures = [var.app_secret_version]
 }

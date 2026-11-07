@@ -170,3 +170,14 @@ variable "permissions_boundary_arn" {
   type        = string
   default     = null
 }
+
+variable "role_password_version" {
+  description = "Version of the lending_app / lending_worker passwords. Write-only secrets are only (re)written when this changes: bump it to rotate both passwords (migrations then apply them to Postgres)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.role_password_version >= 1 && floor(var.role_password_version) == var.role_password_version
+    error_message = "role_password_version must be a positive integer."
+  }
+}

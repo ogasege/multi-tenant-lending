@@ -68,3 +68,9 @@ variable "health_check_path" {
   type        = string
   default     = "/health/ready"
 }
+
+variable "enable_health_checks" {
+  description = "Create Route 53 health checks and attach them to the geolocation records. Requires the route53 health-check IAM actions, which only the prod apply role holds."
+  type        = bool
+  default     = true
+}
