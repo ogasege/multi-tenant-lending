@@ -98,6 +98,7 @@ const en = {
   viewSchedule: 'View repayment schedule',
   withdraw: 'Withdraw application',
   autoRefresh: 'This page refreshes automatically.',
+  refreshFailed: 'We couldn’t refresh this page. Showing the last update; retrying.',
   payTodayToClose: 'Pay today to close the loan',
   includesInterest: 'Includes interest to date of',
   futureInterestWaived: 'future interest waived.',
@@ -286,6 +287,8 @@ const fr: Messages = {
   viewSchedule: 'Voir l’échéancier',
   withdraw: 'Retirer la demande',
   autoRefresh: 'Cette page se met à jour automatiquement.',
+  refreshFailed:
+    'Impossible d’actualiser la page. Dernière mise à jour affichée ; nouvel essai en cours.',
   payTodayToClose: 'Montant pour solder le prêt aujourd’hui',
   includesInterest: 'Dont intérêts courus :',
   futureInterestWaived: 'd’intérêts futurs annulés.',

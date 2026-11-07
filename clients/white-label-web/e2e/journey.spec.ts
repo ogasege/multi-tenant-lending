@@ -4,26 +4,29 @@
  *   → [staff] assess + approve (credit officer) → disburse to supplier (finance officer)
  *   → [pharmacy] supplier paid, schedule + payoff.
  *
- * Needs `make up` + `make seed` from the repo root. Staff steps need the seeded staff
- * password in SEED_STAFF_PASSWORD; without it the test stops after the application is
- * submitted (the borrower half still runs).
+ * Needs `make up` + `make seed-all` from the repo root. Uses one seeded APPROVE demo
+ * applicant; repeat runs sign that applicant in again instead of registering another (see
+ * startPharmacySession). Staff steps need the seeded staff password in SEED_STAFF_PASSWORD;
+ * without it the test stops after the application is submitted (the borrower half still runs).
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 
 import {
   API_URL,
   apiIsUp,
   lenderExists,
+  recordApiFailures,
   SLUG,
-  signUpPharmacy,
   STAFF_PASSWORD,
+  startPharmacySession,
   spaNavigate,
   staffPage,
+  STATUS_POLL_MS,
 } from './helpers';
 
 test('pharmacy finances a supplier cart end to end', async ({ page, browser }) => {
   test.skip(!(await apiIsUp()), 'API not reachable on :3000 — run `make up` in the repo root');
-  test.skip(!(await lenderExists(SLUG)), `lender ${SLUG} not seeded — run \`make seed\``);
+  test.skip(!(await lenderExists(SLUG)), `lender ${SLUG} not seeded — run \`make seed-all\``);
   test.setTimeout(240_000);
 
   // 1. Branding drives the theme: the CSS variable equals the API's primaryColor.
@@ -37,46 +40,43 @@ test('pharmacy finances a supplier cart end to end', async ({ page, browser }) =
   );
   expect(primary.toUpperCase()).toBe(branding.primaryColor.toUpperCase());
 
-  // The mock bureau scores each BVN deterministically, so a random demo applicant can be
-  // declined; a declined applicant is replaced by a fresh one (up to 12 tries).
-  let applicationUrl = '';
-  let credit: Page | null = null;
-  for (let attempt = 1; ; attempt++) {
-    // 2. Sign-up (public self-registration).
-    await page.goto(`/l/${SLUG}`);
-    await signUpPharmacy(page, SLUG);
+  // 2. A seeded APPROVE demo applicant: signed in again if an earlier run registered it,
+  //    else registered (the sign-up cap is 30 an hour per lender; see startPharmacySession).
+  const apiFailures = recordApiFailures(page);
+  await startPharmacySession(page, SLUG, 'APPROVE');
 
-    // 3. Checkout: offers priced by POST /v1/loan-products/{id}/quote.
-    await expect(page.getByTestId('cart-total')).toContainText('₦');
-    await expect(page.getByTestId('disclosure')).toBeVisible();
-    await expect(page.getByTestId('apr')).toContainText('%');
-    await expect(page.getByTestId('tcc')).toContainText('₦');
+  // 3. Checkout: offers priced by POST /v1/loan-products/{id}/quote.
+  await expect(page.getByTestId('cart-total')).toContainText('₦');
+  await expect(page.getByTestId('disclosure')).toBeVisible();
+  await expect(page.getByTestId('apr')).toContainText('%');
+  await expect(page.getByTestId('tcc')).toContainText('₦');
 
-    // 4. Apply (Idempotency-Key) → status page.
-    await page.getByRole('button', { name: /Apply/ }).click();
-    await expect(page).toHaveURL(/\/applications\/[0-9a-f-]{36}$/);
-    await expect(page.getByTestId('application-headline')).toHaveText(/reviewing/);
-    applicationUrl = page.url();
-    const applicationId = applicationUrl.split('/').pop()!;
+  // 4. Apply (Idempotency-Key) → status page.
+  await page.getByRole('button', { name: /Apply/ }).click();
+  await expect(page).toHaveURL(/\/applications\/[0-9a-f-]{36}$/);
+  await expect(page.getByTestId('application-headline')).toHaveText(/reviewing/);
+  const applicationUrl = page.url();
+  const applicationId = applicationUrl.split('/').pop()!;
 
-    // Developer view shows the raw POST with its Idempotency-Key.
-    await page.getByRole('button', { name: /Developer view/ }).click();
-    await expect(
-      page.getByTestId('dev-exchange').filter({ hasText: 'POST/v1/loan-applications' }).first(),
-    ).toContainText('Idempotency-Key');
-    await page.getByRole('button', { name: 'Close developer view' }).click();
+  // Developer view shows the raw POST with its Idempotency-Key.
+  await page.getByRole('button', { name: /Developer view/ }).click();
+  await expect(
+    page.getByTestId('dev-exchange').filter({ hasText: 'POST/v1/loan-applications' }).first(),
+  ).toContainText('Idempotency-Key');
+  await page.getByRole('button', { name: 'Close developer view' }).click();
 
-    test.skip(!STAFF_PASSWORD, 'Set SEED_STAFF_PASSWORD to run the back-office half');
+  test.skip(!STAFF_PASSWORD, 'Set SEED_STAFF_PASSWORD to run the back-office half');
 
-    // 5. Credit officer: assess (decision + reason codes), then approve (maker).
-    credit ??= await staffPage(browser, SLUG, 'credit');
-    await spaNavigate(credit, `/l/${SLUG}/admin/applications/${applicationId}`);
-    await credit.getByRole('button', { name: /Run credit assessment/ }).click();
-    const decision = credit.getByTestId('decision');
-    await expect(decision).toHaveText(/APPROVE|COUNTER_OFFER|REFER|DECLINE/);
-    if (!(await decision.textContent())?.includes('DECLINE')) break;
-    expect(attempt, 'every demo applicant was declined').toBeLessThan(12);
-  }
+  // 5. Credit officer: assess (decision + reason codes), then approve (maker). The seed scored
+  //    this applicant for this cart, so a decline means the seed and database disagree.
+  const credit = await staffPage(browser, SLUG, 'credit');
+  await spaNavigate(credit, `/l/${SLUG}/admin/applications/${applicationId}`);
+  await credit.getByRole('button', { name: /Run credit assessment/ }).click();
+  // Finished once the button offers a re-run (the decision shown is this assessment's).
+  await expect(credit.getByRole('button', { name: /Re-run assessment/ })).toBeEnabled();
+  await expect(credit.getByTestId('decision'), 'seeded APPROVE applicant').toHaveText(
+    /APPROVE|COUNTER_OFFER|REFER/,
+  );
   await credit.getByRole('button', { name: /^Approve/ }).click();
   await expect(credit.getByRole('link', { name: 'Open loan' })).toBeVisible();
   await credit.getByRole('link', { name: 'Open loan' }).click();
@@ -101,9 +101,15 @@ test('pharmacy finances a supplier cart end to end', async ({ page, browser }) =
   await finance.getByRole('button', { name: 'Record repayment' }).click();
   await expect(finance.locator('.badge').filter({ hasText: 'CLOSED' })).toBeVisible();
 
-  // 7. Pharmacy sees the supplier paid, then the schedule and payoff.
+  // 7. Pharmacy sees the supplier paid, then the schedule and payoff. The status page polls
+  //    (and refreshes on focus); wait for the condition itself, bounded by a few poll cycles.
   await spaNavigate(page, new URL(applicationUrl).pathname);
-  await expect(page.getByTestId('application-headline')).toHaveText(/supplier has been paid/);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(
+    page.getByTestId('application-headline'),
+    `pharmacy status after the loan closed; failed API calls: ${apiFailures.join(', ') || 'none'}`,
+  ).toHaveText(/supplier has been paid/, { timeout: STATUS_POLL_MS * 4 });
+  await expect(page.getByTestId('refresh-failed')).toHaveCount(0);
   await page.getByRole('link', { name: /View repayment schedule/ }).click();
   await expect(page.getByTestId('schedule')).toBeVisible();
   await expect(page.getByText('This loan is fully repaid.')).toBeVisible();

@@ -46,12 +46,9 @@ const TABS: { status: ApplicationStatus | undefined; label: string }[] = [
 export function Applications() {
   const { slug, api, locale, t } = useLender();
   const [status, setStatus] = useState<ApplicationStatus | undefined>('SUBMITTED');
-  const load = useLoad(
-    () => api.staff.applications({ status, limit: 50 }),
-    [api, status],
-    locale,
-    5000,
-  );
+  const load = useLoad(() => api.staff.applications({ status, limit: 50 }), [api, status], locale, {
+    everyMs: 5000,
+  });
   const items = load.data?.items ?? [];
   const customers = useCustomers(
     api.staff,

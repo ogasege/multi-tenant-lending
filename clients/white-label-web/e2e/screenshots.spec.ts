@@ -1,7 +1,8 @@
 /**
  * Captures the demo screenshots under screenshots/ (run: `npm run screenshots`). Each lender
  * in demo-brands/lenders.json that the local stack knows gets the same screens, themed only
- * by its branding API.
+ * by its branding API. Each lender uses one seeded APPROVE demo applicant (signed in again on
+ * repeat runs, see startPharmacySession), so screenshots never eat into the sign-up cap.
  */
 import { expect, test, type Page } from '@playwright/test';
 
@@ -10,8 +11,8 @@ import manifest from '../demo-brands/lenders.json' with { type: 'json' };
 import {
   apiIsUp,
   lenderExists,
-  signUpPharmacy,
   STAFF_PASSWORD,
+  startPharmacySession,
   spaNavigate,
   staffPage,
 } from './helpers';
@@ -32,32 +33,25 @@ for (const lender of manifest.lenders) {
     await expect(phone.locator('.hero')).toBeVisible();
     await shot(phone, `${lender.slug}-1-home`);
 
-    // The mock bureau scores each BVN deterministically; a random demo applicant can be
-    // declined, so try a few fresh applicants until the decision is approvable.
-    let applicationId = '';
-    let credit: Page | null = null;
-    for (let attempt = 1; attempt <= 12; attempt++) {
-      await phone.goto(`/l/${lender.slug}`);
-      await signUpPharmacy(phone, lender.slug);
-      await expect(phone.getByTestId('disclosure')).toBeVisible();
-      await shot(phone, `${lender.slug}-2-finance-cart`);
+    // A seeded APPROVE demo applicant, signed in again on repeat runs (no sign-up).
+    await startPharmacySession(phone, lender.slug, 'APPROVE');
+    await expect(phone.getByTestId('disclosure')).toBeVisible();
+    await shot(phone, `${lender.slug}-2-finance-cart`);
 
-      await phone.getByRole('button', { name: /Apply|Demander/ }).click();
-      await expect(phone.getByTestId('application-headline')).toBeVisible();
-      applicationId = phone.url().split('/').pop()!;
-      await shot(phone, `${lender.slug}-3-status`);
+    await phone.getByRole('button', { name: /Apply|Demander/ }).click();
+    await expect(phone.getByTestId('application-headline')).toBeVisible();
+    const applicationId = phone.url().split('/').pop()!;
+    await shot(phone, `${lender.slug}-3-status`);
 
-      if (!STAFF_PASSWORD) return;
-      credit ??= await staffPage(browser, lender.slug, 'credit');
-      await spaNavigate(credit, `/l/${lender.slug}/admin/applications`);
-      await expect(credit.getByTestId('applications')).toBeVisible();
-      await shot(credit, `${lender.slug}-4-queue`);
-      await spaNavigate(credit, `/l/${lender.slug}/admin/applications/${applicationId}`);
-      await credit.getByRole('button', { name: /Run credit assessment|Lancer/ }).click();
-      await expect(credit.getByTestId('decision')).not.toHaveText(/Not assessed|Pas encore/);
-      if (!((await credit.getByTestId('decision').textContent()) ?? '').includes('DECLINE')) break;
-    }
-    if (!credit) return;
+    if (!STAFF_PASSWORD) return;
+    const credit = await staffPage(browser, lender.slug, 'credit');
+    await spaNavigate(credit, `/l/${lender.slug}/admin/applications`);
+    await expect(credit.getByTestId('applications')).toBeVisible();
+    await shot(credit, `${lender.slug}-4-queue`);
+    await spaNavigate(credit, `/l/${lender.slug}/admin/applications/${applicationId}`);
+    await credit.getByRole('button', { name: /Run credit assessment|Lancer/ }).click();
+    await expect(credit.getByRole('button', { name: /Re-run assessment|Relancer/ })).toBeEnabled();
+    await expect(credit.getByTestId('decision')).toHaveText(/APPROVE|COUNTER_OFFER|REFER/);
     await shot(credit, `${lender.slug}-5-decision`);
     await credit.getByRole('button', { name: /^(Approve|Approuver)/ }).click();
     await credit.getByRole('link', { name: /Open loan|Ouvrir le prêt/ }).click();

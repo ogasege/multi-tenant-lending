@@ -1,6 +1,8 @@
 import { useCallback } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
+import type { Application, ApplicationStatus as Status, Loan, LoanStatus } from '../../api/types';
+
 import { Badge, ErrorNote, Money, Rate, Spinner, Stat } from '../../components/ui';
 import { reasonText } from '../../i18n/errors';
 import { formatDate, formatDateTime } from '../../money/format';
@@ -25,6 +27,21 @@ function Step({ state, title, detail }: { state: StepState; title: string; detai
   );
 }
 
+/** Polling interval of the status page. */
+export const STATUS_POLL_MS = 4000;
+
+const FINAL_APPLICATION: ReadonlySet<Status> = new Set(['REJECTED', 'WITHDRAWN', 'EXPIRED']);
+const FINAL_LOAN: ReadonlySet<LoanStatus> = new Set(['CLOSED', 'WRITTEN_OFF', 'CANCELLED']);
+
+/** Nothing on this page can change any more: stop polling. */
+export function isFinal({ app, loan }: { app: Application; loan: Loan | null }): boolean {
+  return FINAL_APPLICATION.has(app.status) || (loan !== null && FINAL_LOAN.has(loan.status));
+}
+
+/**
+ * The pharmacy's view of one application, read from the application AND its loan (the loan
+ * says whether the supplier has been paid). Polls until a final state.
+ */
 export function ApplicationStatus() {
   const { id = '' } = useParams();
   const { slug, api, locale, t } = useLender();
@@ -36,7 +53,7 @@ export function ApplicationStatus() {
     },
     [api, id],
     locale,
-    4000,
+    { everyMs: STATUS_POLL_MS, until: isFinal },
   );
   const withdraw = useCallback(() => api.customer.withdraw(id), [api, id]);
   const withdrawAction = useAction(withdraw, locale);
@@ -132,7 +149,13 @@ export function ApplicationStatus() {
         </button>
       )}
       <ErrorNote error={withdrawAction.error} />
-      <p className="muted small">{t.autoRefresh}</p>
+      {load.error && (
+        <div className="stack" data-testid="refresh-failed">
+          <p className="muted small">{t.refreshFailed}</p>
+          <ErrorNote error={load.error} />
+        </div>
+      )}
+      {load.polling && <p className="muted small">{t.autoRefresh}</p>}
     </div>
   );
 }

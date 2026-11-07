@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, useParams } from 'react-router-dom';
 
 import { AdminShell, PharmacyShell, RequireSession } from './components/Shells';
@@ -43,6 +43,17 @@ function Admin() {
   );
 }
 
+/**
+ * Remounts a per-record page when its `:id` changes. In-app navigation from one record to
+ * another otherwise keeps the page's state (loaded data, a previous credit assessment, an
+ * action's Idempotency-Key), so the new record would briefly, or for good, show the old one.
+ */
+function KeyedById({ children }: { children: ReactNode }) {
+  const { id = '' } = useParams();
+  return <Fragment key={id}>{children}</Fragment>;
+}
+
+const byId = (el: ReactNode) => <KeyedById>{el}</KeyedById>;
 const customer = (el: ReactNode) => <RequireSession area="customer">{el}</RequireSession>;
 const staff = (el: ReactNode) => <RequireSession area="staff">{el}</RequireSession>;
 
@@ -59,8 +70,8 @@ export const routes = [
           { path: 'signup', element: <SignUp /> },
           { path: 'login', element: <Login area="customer" /> },
           { path: 'checkout', element: customer(<Checkout />) },
-          { path: 'applications/:id', element: customer(<ApplicationStatus />) },
-          { path: 'loans/:id', element: customer(<LoanView />) },
+          { path: 'applications/:id', element: customer(byId(<ApplicationStatus />)) },
+          { path: 'loans/:id', element: customer(byId(<LoanView />)) },
           { path: 'account', element: customer(<Account />) },
         ],
       },
@@ -71,9 +82,9 @@ export const routes = [
           { index: true, element: <Navigate to="applications" replace /> },
           { path: 'login', element: <Login area="staff" /> },
           { path: 'applications', element: staff(<Applications />) },
-          { path: 'applications/:id', element: staff(<ApplicationReview />) },
+          { path: 'applications/:id', element: staff(byId(<ApplicationReview />)) },
           { path: 'loans', element: staff(<Loans />) },
-          { path: 'loans/:id', element: staff(<LoanAdmin />) },
+          { path: 'loans/:id', element: staff(byId(<LoanAdmin />)) },
           { path: 'ledger', element: staff(<Ledger />) },
           { path: 'audit', element: staff(<Audit />) },
         ],

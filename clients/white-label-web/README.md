@@ -60,7 +60,8 @@ use the in-app links. Use one browser window per role for the demo.
    financed (cart plus fee) and what the supplier receives (the full cart). Products above the
    lender's APR cap are disabled. Each cart gets its own order reference (`ORD-…`). The lender
    resolves the supplier to pay from that order, so the client never sends a payee account.
-3. Apply → status page (polls every 4 s).
+3. Apply → status page (polls every 4 s and on window focus, stops once the loan is closed;
+   a failed refresh is shown on the page instead of silently keeping the old status).
 4. Credit officer (second window): queue → application → Run credit assessment (decision,
    grade, reason codes) → Approve. The maker-checker banner explains the next step.
 5. Finance officer: Loans → Disburse. Open **Developer view** and press _Resend with the same
@@ -167,3 +168,23 @@ The Playwright tests need the stack (`make up PROFILES=two-cells && make seed-al
 themselves when the API is not reachable. Staff steps use `SEED_STAFF_PASSWORD` from the
 environment or, failing that, from the repo's `.env` (the value `make seed` used); without it
 the journey stops after the application is submitted.
+
+**Sign-up budget.** Public sign-up is capped at 30 an hour per lender, and every attempt
+counts, including a 409 for a national id that is already registered. The seed gives each
+lender 3 APPROVE demo applicants. So the specs never register more than they need:
+
+- The journey (`LENDER_SLUG`, default `eko-medicredit`) and the screenshots (one per lender)
+  each use one seeded APPROVE applicant. The helper (`startPharmacySession` in `e2e/helpers.ts`)
+  stores the credentials it registered in `e2e/.state/demo-accounts.json` (git-ignored, tied to
+  the seed's `generatedAt`), and later runs **sign that applicant in again** instead of
+  registering another one. A returning applicant scores the same: the scorecard reads the
+  profile and active arrears, not earlier loans. Steady state is zero sign-ups per run.
+- If every seeded applicant is already registered by someone else (for example, by hand during a
+  demo), the helper fails with the re-seed command. It does not register random applicants,
+  whose outcome is unknown and which cost more sign-ups. Re-seed with
+  `make clean && make up PROFILES=two-cells && make seed-all`. That also clears the Redis
+  rate-limit counters and makes the old `e2e/.state` accounts stale, which the helper ignores.
+- Sign-ins share a per-client budget of 20 a minute. On a 429 the login helpers wait the
+  server's `Retry-After` (at most a minute) and try once more.
+- For a live demo by hand, leave an APPROVE applicant unused (3 per lender) or sign in again
+  with an account you created.

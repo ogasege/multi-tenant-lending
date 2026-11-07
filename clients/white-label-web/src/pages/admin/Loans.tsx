@@ -13,7 +13,9 @@ const TABS: (LoanStatus | undefined)[] = ['PENDING_DISBURSEMENT', 'ACTIVE', 'CLO
 export function Loans() {
   const { slug, api, locale, t } = useLender();
   const [status, setStatus] = useState<LoanStatus | undefined>('PENDING_DISBURSEMENT');
-  const load = useLoad(() => api.staff.loans({ status, limit: 50 }), [api, status], locale, 5000);
+  const load = useLoad(() => api.staff.loans({ status, limit: 50 }), [api, status], locale, {
+    everyMs: 5000,
+  });
   const items = load.data?.items ?? [];
   const customers = useCustomers(
     api.staff,

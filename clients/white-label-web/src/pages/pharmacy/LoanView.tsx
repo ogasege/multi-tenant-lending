@@ -20,7 +20,10 @@ export function LoanView() {
     },
     [api, id],
     locale,
-    10_000,
+    {
+      everyMs: 10_000,
+      until: ({ loan }) => loan.status !== 'ACTIVE' && loan.status !== 'PENDING_DISBURSEMENT',
+    },
   );
   if (!load.data)
     return load.error ? <ErrorNote error={load.error} /> : <Spinner label={t.loading} />;
@@ -106,6 +109,12 @@ export function LoanView() {
       <p className="muted small">
         {t.howToPay.replace('{ref}', loan.reference)} {branding.supportEmail ?? ''}
       </p>
+      {load.error && (
+        <div className="stack" data-testid="refresh-failed">
+          <p className="muted small">{t.refreshFailed}</p>
+          <ErrorNote error={load.error} />
+        </div>
+      )}
     </div>
   );
 }

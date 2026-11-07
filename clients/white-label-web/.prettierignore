@@ -7,3 +7,4 @@ screenshots
 demo-brands/logos/*.png
 package-lock.json
 demo-brands/demo-applicants.json
+e2e/.state
