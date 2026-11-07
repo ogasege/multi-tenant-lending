@@ -1,0 +1,9 @@
+# Time-boxed exceptions only. Each entry: why it does not apply, and an expiry after which CI
+# fails again so the exception cannot outlive its reason.
+
+# zlib1g in the distroless Node 24 runtime base (fixed in 1:1.3.dfsg+really1.3.1-1+deb13u1).
+# Node bundles its own zlib (`ldd node` lists no libz), so the app never loads this library,
+# and the image has no shell or package manager to reach it. Remove once the distroless
+# base digest is bumped to a rebuild with the fixed package (Dependabot docker updates).
+CVE-2026-76844 exp:2026-11-21
+CVE-2026-85091 exp:2026-11-21
