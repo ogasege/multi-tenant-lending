@@ -17661,14 +17661,41 @@
             "maxLength": 2048
           },
           "eventTypes": {
+            "type": "array",
             "example": [
               "loan.disbursed",
-              "repayment.received"
+              "loan.repayment_received"
             ],
-            "description": "Exact event types to receive (1–50)",
-            "type": "array",
+            "description": "Event types to receive (1–50); unknown types are rejected",
             "items": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "auth.account_locked",
+                "customer.registered",
+                "institution.branding_updated",
+                "institution.registered",
+                "institution.status_changed",
+                "loan.cancelled",
+                "loan.closed",
+                "loan.delinquency_changed",
+                "loan.disbursed",
+                "loan.late_fee_assessed",
+                "loan.repayment_received",
+                "loan_application.approved",
+                "loan_application.assessed",
+                "loan_application.expired",
+                "loan_application.rejected",
+                "loan_application.submitted",
+                "loan_application.withdrawn",
+                "loan_product.created",
+                "loan_product.status_changed",
+                "loan_product.version_created",
+                "user.created",
+                "user.updated",
+                "webhook_endpoint.created",
+                "webhook_endpoint.disabled",
+                "webhook_endpoint.secret_rotated"
+              ]
             }
           }
         },

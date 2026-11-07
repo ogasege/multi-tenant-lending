@@ -1834,7 +1834,7 @@ collection:
               "url": "{{ _.webhook_url }}",
               "eventTypes": [
                 "loan.disbursed",
-                "repayment.received"
+                "loan.repayment_received"
               ]
             }
         headers:

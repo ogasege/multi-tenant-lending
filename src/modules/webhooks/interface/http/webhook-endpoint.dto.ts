@@ -12,6 +12,7 @@ import {
 } from 'class-validator';
 
 import { PageDto, PageQueryDto } from '../../../../common/http/pagination';
+import { DOMAIN_EVENT_TYPES } from '../../../../common/outbox/event-types';
 import {
   EVENT_TYPE_PATTERN,
   MAX_EVENT_TYPES,
@@ -33,8 +34,9 @@ export class CreateWebhookEndpointDto {
 
   @ApiProperty({
     type: [String],
-    example: ['loan.disbursed', 'repayment.received'],
-    description: `Exact event types to receive (1–${MAX_EVENT_TYPES})`,
+    enum: DOMAIN_EVENT_TYPES,
+    example: ['loan.disbursed', 'loan.repayment_received'],
+    description: `Event types to receive (1–${MAX_EVENT_TYPES}); unknown types are rejected`,
   })
   @IsArray()
   @ArrayMinSize(1)
@@ -46,6 +48,7 @@ export class CreateWebhookEndpointDto {
     each: true,
     message: 'eventTypes must be dotted lower-case event names such as loan.disbursed',
   })
+  @IsIn(DOMAIN_EVENT_TYPES, { each: true, message: 'eventTypes contains an unknown event type' })
   eventTypes!: string[];
 }
 

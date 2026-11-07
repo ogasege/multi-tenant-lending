@@ -3,10 +3,11 @@ import { ClsService } from 'nestjs-cls';
 
 import type { RequestContextStore } from '../context/request-context';
 import { canonicalJson } from '../crypto/crypto';
+import type { DomainEventType } from './event-types';
 import type { Tx } from '../database/database.tokens';
 
 export interface DomainEvent {
-  type: string; // e.g. 'loan.disbursed' — also the webhook event type
+  type: DomainEventType; // also the webhook event type
   aggregateType: string;
   aggregateId: string;
   data: Record<string, unknown>;

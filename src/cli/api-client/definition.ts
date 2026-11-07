@@ -764,7 +764,7 @@ const proofs: Folder = {
       url: '{{base_url}}/v1/webhook-endpoints',
       token: 'new_lender_admin_token',
       headers: JSON_HEADERS,
-      body: { url: '{{webhook_url}}', eventTypes: ['loan.disbursed', 'repayment.received'] },
+      body: { url: '{{webhook_url}}', eventTypes: ['loan.disbursed', 'loan.repayment_received'] },
       checks: [status(201), field('status', 'ACTIVE'), has('secret')],
     },
   ],

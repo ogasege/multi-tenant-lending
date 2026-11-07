@@ -77,7 +77,7 @@ describe('audit chain and transactional outbox', () => {
     const outbox = t.app.get(OutboxWriter);
     const event = {
       tenantId: tenant.tenantId,
-      type: 'test.happened',
+      type: 'loan.disbursed' as const,
       aggregateType: 'test',
       aggregateId: 'x',
       data: { amount: 10n },

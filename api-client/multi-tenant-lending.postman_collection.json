@@ -2258,7 +2258,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"url\": \"{{webhook_url}}\",\n  \"eventTypes\": [\n    \"loan.disbursed\",\n    \"repayment.received\"\n  ]\n}",
+              "raw": "{\n  \"url\": \"{{webhook_url}}\",\n  \"eventTypes\": [\n    \"loan.disbursed\",\n    \"loan.repayment_received\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"

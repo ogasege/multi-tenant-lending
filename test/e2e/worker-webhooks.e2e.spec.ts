@@ -20,6 +20,7 @@ import { inject } from 'vitest';
 
 import { TokenService } from '@/common/auth/token.service';
 import { TransactionRunner } from '@/common/database/transaction-runner';
+import type { DomainEventType } from '@/common/outbox/event-types';
 import { OutboxWriter } from '@/common/outbox/outbox-writer';
 import { REDIS } from '@/common/redis/redis.module';
 import { WEBHOOK_TLS_CA, WebhookDispatcher } from '@/modules/webhooks/worker/webhook-dispatcher';
@@ -84,7 +85,7 @@ describe('worker: outbox relay → SQS → signed webhooks; directory projection
     return res.body as { id: string; secret: string };
   };
 
-  const publish = (type: string, data: Record<string, unknown>) =>
+  const publish = (type: DomainEventType, data: Record<string, unknown>) =>
     runner.runForTenant(tenant.tenantId, (tx) =>
       t.app.get(OutboxWriter).publish(tx, {
         tenantId: tenant.tenantId,
@@ -231,7 +232,10 @@ describe('worker: outbox relay → SQS → signed webhooks; directory projection
 
     it('audits the endpoint URL without its query string or fragment', async () => {
       const res = await api('post', '/v1/webhook-endpoints', tenant.tokens.INSTITUTION_ADMIN)
-        .send({ url: `${baseUrl}/ok/audited?token=s3cr3t-in-query#frag`, eventTypes: ['x.y'] })
+        .send({
+          url: `${baseUrl}/ok/audited?token=s3cr3t-in-query#frag`,
+          eventTypes: ['loan.closed'],
+        })
         .expect(201);
       const id = (res.body as { id: string }).id;
       await api('delete', `/v1/webhook-endpoints/${id}`, tenant.tokens.INSTITUTION_ADMIN).expect(
@@ -297,6 +301,8 @@ describe('worker: outbox relay → SQS → signed webhooks; directory projection
       }).expect(422);
       expect(http.body).toMatchObject({ code: 'UNSAFE_WEBHOOK_URL', reason: 'NOT_HTTPS' });
       await post({ url: `${baseUrl}/x`, eventTypes: ['Not An Event'] }).expect(400);
+      // Well-formed but not an event the system emits: refused, not silently never delivered.
+      await post({ url: `${baseUrl}/x`, eventTypes: ['repayment.received'] }).expect(400);
       await post({ url: `${baseUrl}/x`, eventTypes: [] }).expect(400);
       await post(
         { url: `${baseUrl}/x`, eventTypes: ['loan.disbursed'] },
@@ -321,8 +327,8 @@ describe('worker: outbox relay → SQS → signed webhooks; directory projection
 
   describe('delivery', () => {
     it('relays an outbox row to SQS and delivers a correctly signed webhook', async () => {
-      const endpoint = await createEndpoint('/ok/deliver', ['test.delivered']);
-      const eventId = await publish('test.delivered', { amount: 1500n, reference: 'R-1' });
+      const endpoint = await createEndpoint('/ok/deliver', ['loan.late_fee_assessed']);
+      const eventId = await publish('loan.late_fee_assessed', { amount: 1500n, reference: 'R-1' });
 
       const hit = await waitFor(
         () => Promise.resolve(received.find((r) => r.headers['webhook-id'] === eventId)),
@@ -333,7 +339,7 @@ describe('worker: outbox relay → SQS → signed webhooks; directory projection
       const payload = new Webhook(endpoint.secret).verify(hit.body, hit.headers);
       expect(payload).toMatchObject({
         id: eventId,
-        type: 'test.delivered',
+        type: 'loan.late_fee_assessed',
         data: { amount: '1500', reference: 'R-1' },
       });
 
@@ -363,8 +369,11 @@ describe('worker: outbox relay → SQS → signed webhooks; directory projection
     });
 
     it('signs the event stored in the outbox, never the queue body (and only for its tenant)', async () => {
-      await createEndpoint('/ok/stored-first', ['test.stored']);
-      const eventId = await publish('test.stored', { amount: '10', reference: 'R-STORED' });
+      await createEndpoint('/ok/stored-first', ['loan.delinquency_changed']);
+      const eventId = await publish('loan.delinquency_changed', {
+        amount: '10',
+        reference: 'R-STORED',
+      });
       await waitFor(
         () => Promise.resolve(received.find((r) => r.headers['webhook-id'] === eventId)),
         'the genuine delivery',
@@ -375,12 +384,12 @@ describe('worker: outbox relay → SQS → signed webhooks; directory projection
       }, 'the genuine delivery record');
 
       // A second subscriber, then a tampered copy of the message: forged data and type.
-      const late = await createEndpoint('/ok/stored-late', ['test.stored']);
+      const late = await createEndpoint('/ok/stored-late', ['loan.delinquency_changed']);
       const dispatcher = worker.app.get(WebhookDispatcher);
       const tampered = {
         id: eventId,
         tenantId: tenant.tenantId,
-        type: 'test.stored',
+        type: 'loan.delinquency_changed',
         aggregateType: 'test',
         aggregateId: randomUUID(),
         occurredAt: new Date(0).toISOString(),
@@ -394,7 +403,7 @@ describe('worker: outbox relay → SQS → signed webhooks; directory projection
       const payload = new Webhook(late.secret).verify(hit!.body, hit!.headers);
       expect(payload).toMatchObject({
         id: eventId,
-        type: 'test.stored',
+        type: 'loan.delinquency_changed',
         data: { amount: '10', reference: 'R-STORED' },
       });
       expect(hit!.body).not.toContain('FORGED');
@@ -410,9 +419,9 @@ describe('worker: outbox relay → SQS → signed webhooks; directory projection
     });
 
     it('retries a failing endpoint, never re-sends to one that succeeded, then dead-letters', async () => {
-      const failing = await createEndpoint('/fail/always', ['test.failing']);
-      const healthy = await createEndpoint('/ok/sibling', ['test.failing']);
-      const eventId = await publish('test.failing', { n: 1 });
+      const failing = await createEndpoint('/fail/always', ['loan.cancelled']);
+      const healthy = await createEndpoint('/ok/sibling', ['loan.cancelled']);
+      const eventId = await publish('loan.cancelled', { n: 1 });
 
       const dead = await waitFor(async () => {
         const { Messages = [] } = await sqs.send(
@@ -427,7 +436,7 @@ describe('worker: outbox relay → SQS → signed webhooks; directory projection
       expect(JSON.parse(dead.Body ?? '{}')).toMatchObject({
         id: eventId,
         tenantId: tenant.tenantId,
-        type: 'test.failing',
+        type: 'loan.cancelled',
       });
 
       const rows = await deliveries(eventId);
