@@ -89,6 +89,391 @@ npm run dev                 # http://localhost:5173, proxies /cell/af-south-1 �
 
 ---
 
+## Try it yourself
+
+A guided tour for a fresh machine: start the stack, take one loan from sign-up to repayment
+in the web app, then check the same guarantees with `curl`. Run commands from the repository
+root unless a step says otherwise.
+
+### 1. Before you start
+
+| You need                                       | Version                                                  | Check                    |
+| ---------------------------------------------- | -------------------------------------------------------- | ------------------------ |
+| Docker Desktop (or OrbStack, or Docker Engine) | with Compose v2 (`docker compose`, not `docker-compose`) | `docker compose version` |
+| Node.js                                        | 24 (`.nvmrc`; `package.json` requires 24 or newer)       | `node --version`         |
+| `make`                                         | any; the one macOS ships (3.81) works                    | `make --version`         |
+| `curl`, `git`                                  | any                                                      |                          |
+| `jq` (optional)                                | any; only for pretty-printing JSON                       |                          |
+
+**Resources.** The running two-region stack uses about 600 MB of memory; give Docker at least
+4 GB so the test suite's throwaway containers fit beside it. Plan for about 5 GB of free disk
+(about 3 GB of images, 0.5 GB of `node_modules`). All images run natively on Apple Silicon
+(arm64); no emulation settings are needed.
+
+**Free ports.** Everything binds to `127.0.0.1` only.
+
+| Port | Used by                                   |
+| ---- | ----------------------------------------- |
+| 3000 | API, Lagos cell (af-south-1)              |
+| 3001 | API, EU cell (eu-west-3), two-region only |
+| 5173 | web app dev server                        |
+| 5432 | PostgreSQL                                |
+| 6379 | Redis                                     |
+| 4566 | LocalStack (S3, SQS, DynamoDB)            |
+
+```bash
+lsof -nP -iTCP -sTCP:LISTEN | grep -E ':(3000|3001|5173|5432|6379|4566) '
+```
+
+You should see no output. Anything listed is already using a port; stop it first.
+
+**Get the code.**
+
+```bash
+git clone <repository URL> 10mg-lending
+cd 10mg-lending
+cp .env.example .env
+nvm use        # or fnm use; picks Node 24 from .nvmrc
+npm ci
+```
+
+`.env` holds local-only values, including the demo passwords (`SEED_*`). `npm ci` is needed
+because the seed runs on your machine, not in a container.
+
+### 2. Start everything
+
+Pick one of the two paths. The two-region path is needed for Teranga Santé (the Senegalese
+lender) and for the redirect checks in step 5.
+
+**One region (Lagos cell only):**
+
+```bash
+make up
+make seed
+```
+
+**Two regions (Lagos on :3000, EU on :3001):**
+
+```bash
+make demo-cells
+```
+
+`make demo-cells` is `make up PROFILES=two-cells` followed by `make seed-all`, plus three
+checks: it prints the tenant directory, shows an EU-cell login for a Lagos lender answered with
+`307`, and checks that each cell uses its own queue. You can also run the two steps yourself:
+
+```bash
+make up PROFILES=two-cells
+make seed-all
+```
+
+**How long.** The first `make up` downloads about 2 GB of images (PostgreSQL, Redis, LocalStack,
+Flyway, Node), so it depends on your connection. With those cached, building both app images
+from scratch took about 35 seconds on an Apple Silicon laptop, and seeding both cells about 7
+seconds. `make up` waits up to 5 minutes for every service to become healthy.
+
+**Check it is up.** `make up` ends with a table in which every service says `(healthy)` and
+the line `API ready: http://localhost:3000/health/ready`. At any time:
+
+```bash
+make ps
+curl http://localhost:3000/health/ready
+curl http://localhost:3001/health/ready   # two regions only
+```
+
+You should see `{"status":"ok", ...}` with `database` and `redis` both `up`. Swagger UI is at
+<http://localhost:3000/docs>.
+
+### 3. Find your logins
+
+The seed prints two tables at the end of its output, after its request log lines.
+
+**Accounts** (`Credentials (LOCAL ONLY ...)`). Passwords appear only on the run that created
+the account; later runs show `(unchanged)`. They are always the `SEED_*` values in your `.env`:
+
+| Account                    | Email                                     | Password                       | What it can do                                                                                |
+| -------------------------- | ----------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------- |
+| Lender admin               | `admin@<slug>.example`                    | `SEED_STAFF_PASSWORD`          | Branding, staff users, loan products, end of day; reads applications, loans, ledger and audit |
+| Credit officer             | `credit@<slug>.example`                   | `SEED_STAFF_PASSWORD`          | Assesses, approves and rejects applications; reads loans                                      |
+| Finance officer            | `finance@<slug>.example`                  | `SEED_STAFF_PASSWORD`          | Disburses loans, records repayments, reads the ledger and audit log                           |
+| Auditor                    | `audit@<slug>.example`                    | `SEED_STAFF_PASSWORD`          | Reads everything, including ledger and audit log; changes nothing                             |
+| Borrowers (two per lender) | e.g. `amaka.eze@<slug>.customers.example` | `SEED_CUSTOMER_PASSWORD`       | Apply and see their own applications and loans                                                |
+| Platform admin (API only)  | `ops@platform.example`                    | `SEED_PLATFORM_ADMIN_PASSWORD` | Registers, lists and suspends lenders (`POST /v1/platform/auth/login`)                        |
+
+The `<slug>` values are in the demo lender table above (`eko-medicredit`, `arewa-pharmafinance`,
+`delta-carelend`, `teranga-sante`). No role can both approve and disburse.
+
+**Demo applicants** (`Demo applicants (sign up with these ...)`). These are not accounts yet:
+they are sign-up profiles whose credit decision is known in advance for the demo cart (500,000
+NGN, or 1,000,000 XOF for Teranga Santé, over 30 days). Each lender gets three `APPROVE`, one
+`COUNTER_OFFER` and one `DECLINE`. The seed also writes them to
+`clients/white-label-web/demo-brands/demo-applicants.json`, which the web app reads. Each one
+can sign up once per lender, and re-seeding does not free a used one (see step 7).
+
+### 4. Walk through a loan in the web app
+
+Start the web app in a second terminal:
+
+```bash
+cd clients/white-label-web
+npm ci
+npm run dev
+```
+
+You should see `VITE ... ready` and `Local: http://localhost:5173/`. Open that address for the
+list of demo lenders.
+
+Use two browser windows (or tabs): one for the pharmacy, one for lender staff. Sessions live
+in memory only, so **reloading a page signs you out**; move around with the in-app links.
+
+**4.1 The pharmacy signs up.** Open <http://localhost:5173/l/eko-medicredit>. You should see
+"Finance your next supplier order" in Eko MediCredit's green.
+
+1. Press **Open a credit account**.
+2. Leave **Demo: APPROVE** selected and press **Fill demo details**. The form fills with the
+   first APPROVE applicant; note the **Email** (on a fresh seed
+   `demo.approve-1@eko-medicredit.customers.example`).
+3. Replace the **Password** with one you choose (12+ characters with upper case, lower case and
+   a digit). You need it again in step 5.
+4. Press **Create account**.
+
+You should land on **Finance this cart**. If you see "An account already exists with these
+details" instead, that applicant was used before: the form now holds the next APPROVE
+applicant, so set your password again and press **Create account** again.
+
+**4.2 Finance the cart.** The page shows a ₦500,000.00 cart from Medisource Distributors Ltd
+and the cost of credit before you commit: what the supplier receives, the amount financed (cart
+plus fee), total repayable, total cost of credit and the APR (about 38.4%). Press
+**Apply · supplier is paid directly**. You should see "We’re reviewing your application". Keep
+this window open; it refreshes by itself.
+
+**4.3 The credit officer assesses and approves.** In the second window open
+<http://localhost:5173/l/eko-medicredit/admin>. On **Staff sign in**, enter
+`credit@eko-medicredit.example` and the staff password, then press **Sign in**.
+
+1. The **Applications queue** opens on the **SUBMITTED** tab. Click your pharmacy's name.
+2. Press **Run credit assessment**. You should see `APPROVE · grade …`, the bureau score and
+   **Reason codes: None**.
+3. Press **Approve**, then **Open loan**. The loan is `PENDING_DISBURSEMENT`.
+
+**4.4 The approver cannot disburse.** Still as the credit officer, press **Disburse**. You
+should see "Your role cannot do this." with `FORBIDDEN · 403`: the person who approved a loan
+can never release its money.
+
+**4.5 The finance officer disburses.** Press **Switch user** (bottom left) and sign in as
+`finance@eko-medicredit.example`. You return to the same loan.
+
+1. Press **Disburse**. You should see **✓ Paid** with a `MOCK-…` provider reference.
+2. Optional: open **Developer view** (bottom right). On the `POST …/disburse` row press
+   **Resend with the same key**. A new row appears with `idempotent-replayed: true`: the stored
+   answer came back and nothing was paid twice. Close the drawer with **×**.
+
+**4.6 Record a repayment.** Under **Record repayment**, press **Use payoff amount**, type a
+reference in **Bank reference** (for example `NIP-0001`; every channel except cash needs one,
+and each must be new for the lender) and press **Record repayment**. The loan badge changes to `CLOSED`.
+
+**4.7 Check the books.** In the left menu open **Ledger**: the trial balance shows
+**Balanced ✓**. Open **Audit** and press **Verify chain**: you should see
+**Verified ✓ · <n> entries**.
+
+**4.8 Back to the pharmacy.** The first window now says "Your supplier has been paid". Press
+**View repayment schedule** to see "This loan is fully repaid."
+
+To see the same build as another brand, open <http://localhost:5173/l/teranga-sante> (two
+regions only): French copy, XOF amounts without decimals, served by the eu-west-3 cell.
+
+### 5. Try it from the API
+
+The same rules, checked with `curl` against <http://localhost:3000>. Amounts are strings in
+minor units (`50000000` is ₦500,000.00). Every request is also in Swagger UI at
+<http://localhost:3000/docs>.
+
+**5.1 Set up the shell.** From the repository root (bash or zsh):
+
+```bash
+set -a; source .env; set +a      # loads the SEED_* passwords into this shell
+API=http://localhost:3000
+
+# Runs a JavaScript expression on a JSON response; `r` is the parsed body.
+js() {
+  node -e 'let s="";process.stdin.on("data",(c)=>(s+=c)).on("end",()=>{const r=JSON.parse(s);console.log(eval(process.argv[1]))})' "$1"
+}
+
+# Logs in to a lender and prints an access token (valid for 15 minutes).
+login() {
+  curl -s -X POST "$API/v1/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"institutionSlug\":\"$1\",\"email\":\"$2\",\"password\":\"$3\"}" | js 'r.accessToken'
+}
+```
+
+Tokens last 15 minutes. If a call later answers `401`, run its `login` line again. To read any
+full response, drop the `| js ...` part (or pipe it to `jq`).
+
+**5.2 Log in as staff and list loans.**
+
+```bash
+FINANCE=$(login eko-medicredit finance@eko-medicredit.example "$SEED_STAFF_PASSWORD")
+curl -s "$API/v1/me" -H "Authorization: Bearer $FINANCE" | js 'r.role'
+curl -s "$API/v1/loans" -H "Authorization: Bearer $FINANCE" \
+  | js 'r.items.map((l) => `${l.id} ${l.reference} ${l.status}`).join("\n")'
+```
+
+You should see `FINANCE_OFFICER`, then one line per loan, including the `CLOSED` loan from
+step 4.
+
+**5.3 Another lender cannot see it.** Ask for the same loan as Arewa PharmaFinance's finance
+officer:
+
+```bash
+LOAN_ID=$(curl -s "$API/v1/loans" -H "Authorization: Bearer $FINANCE" | js 'r.items[0].id')
+AREWA=$(login arewa-pharmafinance finance@arewa-pharmafinance.example "$SEED_STAFF_PASSWORD")
+curl -s -o /dev/null -w '%{http_code}\n' "$API/v1/loans/$LOAN_ID" -H "Authorization: Bearer $FINANCE"
+curl -s "$API/v1/loans/$LOAN_ID" -H "Authorization: Bearer $AREWA" | js 'r.status + " " + r.code'
+```
+
+You should see `200` for Eko, then `404 NOT_FOUND` for Arewa: the same answer as for an id
+that does not exist, so nothing reveals that the loan is there.
+
+**5.4 One more loan, start to finish.** Use the pharmacy from step 4.1. It applies again for
+the same cart, which its demo profile is known to be approved for:
+
+```bash
+PHARMACY_EMAIL='demo.approve-1@eko-medicredit.customers.example'   # the email from step 4.1
+PHARMACY_PASSWORD='<the password you chose in step 4.1>'
+PHARMACY=$(login eko-medicredit "$PHARMACY_EMAIL" "$PHARMACY_PASSWORD")
+PRODUCT_ID=$(curl -s "$API/v1/loan-products" -H "Authorization: Bearer $PHARMACY" \
+  | js 'r.items.find((p) => p.code === "SUPPLIER_30").id')
+APP_ID=$(curl -s -X POST "$API/v1/loan-applications" -H "Authorization: Bearer $PHARMACY" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" \
+  -d "{\"productId\":\"$PRODUCT_ID\",\"principal\":\"50000000\",\"term\":30,\"externalOrderReference\":\"ORD-$(date +%s)\"}" \
+  | js 'r.id')
+echo "$APP_ID"
+```
+
+You should see the new application's id. Now the credit officer assesses and approves it:
+
+```bash
+CREDIT=$(login eko-medicredit credit@eko-medicredit.example "$SEED_STAFF_PASSWORD")
+curl -s -X POST "$API/v1/loan-applications/$APP_ID/assess" -H "Authorization: Bearer $CREDIT" \
+  | js 'r.decision + " grade " + r.grade'
+NEW_LOAN=$(curl -s -X POST "$API/v1/loan-applications/$APP_ID/approve" \
+  -H "Authorization: Bearer $CREDIT" -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $(uuidgen)" -d '{}' | js 'r.loan.id')
+curl -s -X POST "$API/v1/loans/$NEW_LOAN/disburse" -H "Authorization: Bearer $CREDIT" \
+  -H "Idempotency-Key: $(uuidgen)" | js 'r.status + " " + r.code'
+```
+
+You should see `APPROVE grade …`, then `403 FORBIDDEN`: the approver cannot disburse.
+
+**5.5 Send the same disbursement twice.** The finance officer sends one request twice with
+one `Idempotency-Key`, as a client would after a timeout:
+
+```bash
+KEY=$(uuidgen)
+for i in 1 2; do
+  curl -s -i -X POST "$API/v1/loans/$NEW_LOAN/disburse" -H "Authorization: Bearer $FINANCE" \
+    -H "Idempotency-Key: $KEY" | grep -iE '^HTTP/|^idempotent-replayed'
+done
+```
+
+You should see `HTTP/1.1 200 OK` twice, and `Idempotent-Replayed: true` after the second: the
+stored response was returned and the supplier was paid once.
+
+**5.6 Send the same repayment twice**, then reuse the key for a different amount:
+
+```bash
+KEY=$(uuidgen); REF="NIP-$(date +%s)"
+for i in 1 2; do
+  curl -s -i -X POST "$API/v1/loans/$NEW_LOAN/repayments" -H "Authorization: Bearer $FINANCE" \
+    -H 'Content-Type: application/json' -H "Idempotency-Key: $KEY" \
+    -d "{\"amount\":\"1000000\",\"channel\":\"BANK_TRANSFER\",\"externalReference\":\"$REF\"}" \
+    | grep -iE '^HTTP/|^idempotent-replayed'
+done
+curl -s "$API/v1/loans/$NEW_LOAN/repayments" -H "Authorization: Bearer $FINANCE" | js 'r.items.length'
+curl -s -X POST "$API/v1/loans/$NEW_LOAN/repayments" -H "Authorization: Bearer $FINANCE" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $KEY" \
+  -d "{\"amount\":\"2000000\",\"channel\":\"BANK_TRANSFER\",\"externalReference\":\"$REF\"}" \
+  | js 'r.status + " " + r.code'
+```
+
+You should see `HTTP/1.1 201 Created` twice (the second with `Idempotent-Replayed: true`), then
+`1` (one repayment recorded), then `422 IDEMPOTENCY_KEY_REUSED`.
+
+**5.7 Ledger and audit.**
+
+```bash
+curl -s "$API/v1/ledger/trial-balance" -H "Authorization: Bearer $FINANCE" \
+  | js '`debits ${r.totalDebits} credits ${r.totalCredits} balanced ${r.balanced}`'
+curl -s "$API/v1/audit-logs/verify" -H "Authorization: Bearer $FINANCE" \
+  | js '`valid ${r.valid}, ${r.entriesChecked} entries`'
+```
+
+You should see equal debits and credits with `balanced true`, then `valid true`.
+
+**5.8 Two regions** (only with the two-region path). Teranga Santé lives in the EU cell. A
+login sent to the Lagos cell is redirected there:
+
+```bash
+TERANGA_LOGIN="{\"institutionSlug\":\"teranga-sante\",\"email\":\"credit@teranga-sante.example\",\"password\":\"$SEED_STAFF_PASSWORD\"}"
+curl -s -i -X POST "$API/v1/auth/login" -H 'Content-Type: application/json' -d "$TERANGA_LOGIN" \
+  | grep -iE '^HTTP/|^location|^x-tenant-cell'
+curl -s -L -X POST "$API/v1/auth/login" -H 'Content-Type: application/json' -d "$TERANGA_LOGIN" \
+  | js 'r.tokenType'
+```
+
+You should see `HTTP/1.1 307 Temporary Redirect`, `X-Tenant-Cell: eu-west-3` and
+`Location: http://localhost:3001/v1/auth/login`. With `-L`, `curl` re-sends the same POST to
+:3001 and prints `Bearer`. A token from one cell is refused by the other:
+
+```bash
+TERANGA=$(curl -s -L -X POST "$API/v1/auth/login" -H 'Content-Type: application/json' \
+  -d "$TERANGA_LOGIN" | js 'r.accessToken')
+curl -s "$API/v1/loans" -H "Authorization: Bearer $TERANGA" | js 'r.status + " " + r.apiBaseUrl'
+```
+
+You should see `421 http://localhost:3001`.
+
+### 6. Run the tests
+
+| Command                                  | What runs                                              | Needs Docker | Time (Apple Silicon laptop) |
+| ---------------------------------------- | ------------------------------------------------------ | ------------ | --------------------------- |
+| `make check`                             | lint, type check, 512 unit tests                       | no           | about 10 s                  |
+| `make test`                              | unit, db and e2e: 746 tests                            | yes          | about 1 minute              |
+| `make coverage`                          | the same with the coverage gate; report in `coverage/` | yes          | about 70 s                  |
+| `cd clients/white-label-web && npm test` | 68 web client component tests                          | no           | a few seconds               |
+
+The db and e2e tests start their own throwaway PostgreSQL, Redis and LocalStack containers
+(Testcontainers), so they run fine while the local stack is up. Red `ERROR` and `WARN` log lines during the run come from tests that simulate
+outages (for example Redis being down); the run passed if the summary ends with
+`Tests  746 passed`.
+
+### 7. Reset and troubleshooting
+
+```bash
+make down          # stop everything, keep the data
+make up            # or: make up PROFILES=two-cells; data and logins are still there
+make clean         # stop everything and delete the database and LocalStack data
+```
+
+After `make clean`, start again with step 2. A fresh database gives each lender new ids, so the
+seed writes a new set of demo applicants and all of them are unused again. Running
+`make seed` or `make seed-all` again without `make clean` is safe: it only creates what is
+missing.
+
+| What you see                                                               | Why                                                                                                                        | What to do                                                                                                     |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `Bind for 127.0.0.1:3001 failed: port is already allocated` from `make up` | Another program uses the port                                                                                              | Find it with the `lsof` command from step 1 and stop it                                                        |
+| `Error: Port 5173 is already in use` from `npm run dev`                    | A dev server is already running                                                                                            | Use the running one, or stop it                                                                                |
+| Sign-up says "An account already exists with these details" (`409`)        | That demo applicant already signed up with this lender                                                                     | Press **Create account** again: the form now holds the next applicant with the same outcome                    |
+| "All demo applicants with this outcome are used"                           | Every applicant with that outcome is registered. Re-seeding does not free them                                             | Use another lender (each has its own three APPROVE applicants), or `make clean`, then step 2                   |
+| Sign-up answers `429` (`RATE_LIMITED`)                                     | At most 30 sign-up attempts per lender per hour; every attempt counts, a `409` included, and so do the seed's own sign-ups | Wait for the time in `Retry-After`, or clear all local rate-limit counters with `docker compose restart redis` |
+| Sign-in answers `429`                                                      | At most 20 sign-ins per minute from one client                                                                             | Wait a minute                                                                                                  |
+| The web app shows the sign-in page again                                   | The page was reloaded; sessions are kept in memory only                                                                    | Sign in again and use the in-app links                                                                         |
+| `curl` answers `401`                                                       | The access token expired (15 minutes)                                                                                      | Run the `login` line again                                                                                     |
+| Containers keep restarting, or tests fail to start containers              | Docker is short of memory                                                                                                  | Give Docker at least 4 GB (Docker Desktop: Settings → Resources)                                               |
+
+---
+
 ## Architecture
 
 ### System context (one region)
@@ -550,9 +935,12 @@ schedule's principal always sums to the loan amount"), `@vitest/coverage-v8`.
 
 | Project | Scope                                                                    | Runs against                                                                           | Tests           |
 | ------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- | --------------- |
-| `unit`  | `src/**/*.spec.ts`, pure logic next to the code                          | nothing                                                                                | 441 in 43 files |
-| `db`    | `test/integration/**`: RLS, ledger, audit, privileges, Flyway guarantees | a PostgreSQL container per suite, migrated by the real Flyway image as a non-superuser | 32              |
-| `e2e`   | `test/e2e/**`: HTTP journeys through the real app                        | PostgreSQL + Redis + LocalStack (S3, SQS, DynamoDB)                                    | 167             |
+| `unit`  | `src/**/*.spec.ts`, pure logic next to the code                          | nothing                                                                                | 512 in 48 files |
+| `db`    | `test/integration/**`: RLS, ledger, audit, privileges, Flyway guarantees | a PostgreSQL container per suite, migrated by the real Flyway image as a non-superuser | 42              |
+| `e2e`   | `test/e2e/**`: HTTP journeys through the real app                        | PostgreSQL + Redis + LocalStack (S3, SQS, DynamoDB)                                    | 192             |
+
+In total 746 tests in 64 files. The web client has 68 more in 9 files (`npm test` in
+`clients/white-label-web`).
 
 ```bash
 make test-unit              # no Docker needed
@@ -563,7 +951,8 @@ make check                  # lint + typecheck + unit tests
 ```
 
 **Coverage gate** (CI fails below it): 80 % lines, 75 % branches, 80 % functions, 80 %
-statements overall; 95 / 90 / 95 / 95 for `src/modules/lending/domain/**`.
+statements overall; 95 / 90 / 95 / 95 for `src/modules/lending/domain/**`. Current overall
+coverage: 95.93 % lines, 85.88 % branches, 98.17 % functions, 94.08 % statements.
 
 ---
 
