@@ -72,6 +72,10 @@ The catalogue is `clients/white-label-web/demo-brands/lenders.json` (fictional b
 
 **White-label web client** (`clients/white-label-web`, React + Vite):
 
+A small demo app, separate from the backend deliverable. It shows the white-label API in use
+(every colour, logo, locale and currency comes from the branding endpoint) and is what the demo
+video records.
+
 ```bash
 cd clients/white-label-web
 npm ci
