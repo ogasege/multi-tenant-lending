@@ -33,7 +33,7 @@ const en = {
   demoExpect: 'Demo:',
   demoUsedNext: 'That demo applicant is already registered here; the next one is filled in.',
   demoUsedNone:
-    'All demo applicants with this outcome are used. Re-seed (make seed) or use a random applicant.',
+    'All demo applicants with this outcome are used. Run make clean then make up and make seed for a fresh set, or use a random applicant.',
   businessName: 'Business name',
   registrationNumber: 'CAC registration number',
   licenceNumber: 'Pharmacy licence (PCN)',
@@ -125,7 +125,7 @@ const en = {
     'You submitted this application, so you may not decide it. The API will refuse (SOD_VIOLATION).',
   makerCheckerDisburse: 'Disbursing needs a finance officer other than the approver.',
   makerCheckerApprover:
-    'You approved this loan, so you may not disburse it. Try it: the API refuses with SOD_VIOLATION.',
+    'You approved this loan, so you may not disburse it. Try it: the API refuses (FORBIDDEN for your role; SOD_VIOLATION even if your role could disburse).',
   creditDecision: 'Credit decision',
   grade: 'grade',
   notAssessed: 'Not assessed yet',
@@ -222,7 +222,7 @@ const fr: Messages = {
   demoExpect: 'Démo :',
   demoUsedNext: 'Ce demandeur de démo est déjà inscrit ici ; le suivant est prérempli.',
   demoUsedNone:
-    'Tous les demandeurs de démo de cette issue sont utilisés. Relancez le seed ou un demandeur aléatoire.',
+    'Tous les demandeurs de démo de cette issue sont utilisés. Lancez make clean, make up puis make seed pour un nouveau jeu, ou un demandeur aléatoire.',
   businessName: 'Raison sociale',
   registrationNumber: 'N° RCCM',
   licenceNumber: 'Agrément (ONP)',
@@ -315,7 +315,7 @@ const fr: Messages = {
     'Vous avez saisi cette demande : vous ne pouvez pas la décider. L’API refusera (SOD_VIOLATION).',
   makerCheckerDisburse: 'Le décaissement exige un agent financier autre que l’approbateur.',
   makerCheckerApprover:
-    'Vous avez approuvé ce prêt : vous ne pouvez pas le décaisser. Essayez : l’API refuse (SOD_VIOLATION).',
+    'Vous avez approuvé ce prêt : vous ne pouvez pas le décaisser. Essayez : l’API refuse (FORBIDDEN pour votre rôle ; SOD_VIOLATION même si votre rôle pouvait décaisser).',
   creditDecision: 'Décision de crédit',
   grade: 'note',
   notAssessed: 'Pas encore analysée',
