@@ -7,6 +7,8 @@ lender pays the supplier at disbursement and the pharmacy repays the lender late
 a balanced double-entry ledger record and can never be applied twice. Each lender's data stays
 in the AWS region its regulator requires.
 
+**Demo video (10 min):** <https://youtu.be/BwcbsefeQbY>
+
 ![Architecture overview: what the system is and how to read the diagrams](assets/diagrams/00-read-me-first.png)
 
 ---
