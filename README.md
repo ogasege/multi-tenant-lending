@@ -49,11 +49,11 @@ carry over from one request to the next.
 
 [![Run in Postman](https://img.shields.io/badge/Run%20in-Postman-FF6C37?logo=postman&logoColor=white)](https://app.getpostman.com/run-collection/27730559-baba99a9-6df8-44ee-be78-f02478c6017f?action=collection%2Ffork&source=rip_markdown&collection-url=entityId%3D27730559-baba99a9-6df8-44ee-be78-f02478c6017f%26entityType%3Dcollection%26workspaceId%3D55415279-6760-4572-9436-dd13372e6948)
 
-| Tool       | Import                                                                                                                                                                                                                                     |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Insomnia   | The button above (signed in to Insomnia), or **Import** → URL or file: [Insomnia collection][ac-insomnia] (both environments inside)                                                                                                       |
-| Postman    | The button above (forks the collection from the [public workspace][ac-postman-ws], which also has both environments), or **Import** → the collection URL below, or the file: [Postman collection][ac-postman] (defaults to the Lagos cell) |
-| Hoppscotch | **Import** → **Postman** → the downloaded [Postman collection][ac-postman] file, with scripts on; environments: same importer                                                                                                              |
+| Tool       | Import                                                                                                                                                                                                                                                                                                                                                    |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Insomnia   | The button above (signed in to Insomnia), or **Import** → URL or file: [Insomnia collection][ac-insomnia] (both environments inside)                                                                                                                                                                                                                      |
+| Postman    | The button above (forks the collection from the [public workspace][ac-postman-ws], which also has both environments), or **Import** → the collection URL below, or the file: [Postman collection][ac-postman] (defaults to the Lagos cell)                                                                                                                |
+| Hoppscotch | **Import** → **Postman** → the downloaded [Postman collection][ac-postman] file with scripts on, then the [Lagos environment][ac-env-lagos] file. Fill the placeholders in the collection's **Properties → Variables** (Hoppscotch lets collection variables override the environment), and keep the environment selected: the scripts store tokens there |
 
 Optional environment files (Postman, Hoppscotch): [Lagos cell][ac-env-lagos],
 [Paris cell][ac-env-paris].
@@ -490,15 +490,15 @@ You should see `421 http://localhost:3001`.
 
 | Command                                  | What runs                                              | Needs Docker | Time (Apple Silicon laptop) |
 | ---------------------------------------- | ------------------------------------------------------ | ------------ | --------------------------- |
-| `make check`                             | lint, type check, 512 unit tests                       | no           | about 10 s                  |
-| `make test`                              | unit, db and e2e: 746 tests                            | yes          | about 1 minute              |
+| `make check`                             | lint, type check, 521 unit tests                       | no           | about 10 s                  |
+| `make test`                              | unit, db and e2e: 755 tests                            | yes          | about 1 minute              |
 | `make coverage`                          | the same with the coverage gate; report in `coverage/` | yes          | about 70 s                  |
 | `cd clients/white-label-web && npm test` | 68 web client component tests                          | no           | a few seconds               |
 
 The db and e2e tests start their own throwaway PostgreSQL, Redis and LocalStack containers
 (Testcontainers), so they run fine while the local stack is up. Red `ERROR` and `WARN` log lines during the run come from tests that simulate
 outages (for example Redis being down); the run passed if the summary ends with
-`Tests  746 passed`.
+`Tests  755 passed`.
 
 ### 7. Reset and troubleshooting
 
@@ -817,11 +817,11 @@ schedule's principal always sums to the loan amount"), `@vitest/coverage-v8`.
 
 | Project | Scope                                                                    | Runs against                                                                           | Tests           |
 | ------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- | --------------- |
-| `unit`  | `src/**/*.spec.ts`, pure logic next to the code                          | nothing                                                                                | 512 in 48 files |
+| `unit`  | `src/**/*.spec.ts`, pure logic next to the code                          | nothing                                                                                | 521 in 49 files |
 | `db`    | `test/integration/**`: RLS, ledger, audit, privileges, Flyway guarantees | a PostgreSQL container per suite, migrated by the real Flyway image as a non-superuser | 42              |
 | `e2e`   | `test/e2e/**`: HTTP journeys through the real app                        | PostgreSQL + Redis + LocalStack (S3, SQS, DynamoDB)                                    | 192             |
 
-In total 746 tests in 64 files. The web client has 68 more in 9 files (`npm test` in
+In total 755 tests in 65 files. The web client has 68 more in 9 files (`npm test` in
 `clients/white-label-web`).
 
 ```bash
@@ -834,7 +834,7 @@ make check                  # lint + typecheck + unit tests
 
 **Coverage gate** (CI fails below it): 80 % lines, 75 % branches, 80 % functions, 80 %
 statements overall; 95 / 90 / 95 / 95 for `src/modules/lending/domain/**`. Current overall
-coverage: 95.93 % lines, 85.88 % branches, 98.17 % functions, 94.08 % statements.
+coverage: 95.65 % lines, 85.99 % branches, 98.04 % functions, 93.87 % statements.
 
 ---
 
@@ -871,48 +871,50 @@ main-only, approval-gated applies.
 
 ## Evidence
 
-Screenshots are stored in `assets/evidence/`. Each one comes from a run against the local stack
-(`make up PROFILES=two-cells && make seed-all`); tokens and passwords are redacted.
+Screenshots are stored in `assets/evidence/`. Each one is a screenshot of a real tool (the web
+app, Hoppscotch, the webhook receiver, GitHub Actions, the Vitest coverage report) taken during
+a run against the local stack (`make up PROFILES=two-cells && make seed-all`); no token, secret
+or password is visible.
 
 ### Branded app: Eko MediCredit
 
-Home and checkout themed only by the branding API: colours, logo, `en-NG` and NGN with 2 decimals.
+The home page themed only by the branding API: colours, logo and `en-NG` copy.
 
 ![Branded app: Eko MediCredit](assets/evidence/branded-eko-medicredit.png)
 
 ### Branded app: Arewa PharmaFinance
 
-The same screens with Arewa PharmaFinance branding from its own branding response.
+The same page with Arewa PharmaFinance branding from its own branding response.
 
 ![Branded app: Arewa PharmaFinance](assets/evidence/branded-arewa-pharmafinance.png)
 
 ### Branded app: Delta CareLend
 
-The same screens with Delta CareLend branding from its own branding response.
+The same page with Delta CareLend branding from its own branding response.
 
 ![Branded app: Delta CareLend](assets/evidence/branded-delta-carelend.png)
 
 ### Branded app: Teranga Santé (eu-west-3)
 
-The EU lender, served by the eu-west-3 cell, in French (`fr-SN`) with XOF and no decimals.
+The EU lender, served by the eu-west-3 cell, in French (`fr-SN`).
 
 ![Branded app: Teranga Santé (eu-west-3)](assets/evidence/branded-teranga-sante.png)
 
 ### Back-office credit assessment with reason codes
 
-A credit officer runs the scorecard: a counter-offer with reason code R01 and the maximum affordable amount.
+A credit officer runs the scorecard: a counter-offer with reason codes R01 and R02 and the maximum affordable amount.
 
 ![Back-office credit assessment with reason codes](assets/evidence/backoffice-assessment.png)
 
 ### Maker-checker: approver cannot disburse (403)
 
-A credit officer cannot disburse, and the person who approved a loan still cannot disburse it after moving to finance (`SOD_VIOLATION`).
+In Hoppscotch, the credit officer who approved the loan tries to disburse it and gets 403 `FORBIDDEN`.
 
 ![Maker-checker: approver cannot disburse (403)](assets/evidence/maker-checker-403.png)
 
 ### Cross-lender access returns 404
 
-Staff of one lender get 404 for another lender's loan and application, so nothing reveals that the record exists.
+In Hoppscotch, the admin of another lender asks for this lender's loan and gets 404 `NOT_FOUND`, so nothing reveals that the loan exists.
 
 ![Cross-lender access returns 404](assets/evidence/cross-lender-404.png)
 
@@ -924,7 +926,7 @@ The Developer view resends a disbursement with the same `Idempotency-Key`: the s
 
 ### Ledger trial balance balances
 
-After the disbursements, total debits equal total credits in the trial balance.
+After a disbursement and its repayment, total debits equal total credits in the trial balance.
 
 ![Ledger trial balance balances](assets/evidence/ledger-trial-balance.png)
 
@@ -934,29 +936,41 @@ The finance officer verifies the hash-chained audit log for the lender.
 
 ![Audit chain verified](assets/evidence/audit-chain-verified.png)
 
-### Cross-region login answered with 307
+### Cross-region login redirected to the home cell (307)
 
-A login for the EU lender sent to the Lagos cell gets 307 `WRONG_CELL` with the EU cell as `Location`; repeating it there succeeds.
+A login for the EU lender sent to the Lagos cell is answered 307; the browser follows it and the EU cell answers 200 with `X-Tenant-Cell: eu-west-3`.
 
-![Cross-region login answered with 307](assets/evidence/cross-region-307.png)
+![Cross-region login redirected to the home cell (307)](assets/evidence/cross-region-307.png)
+
+### Token from another region refused (421)
+
+A token issued by the EU cell and used at the Lagos cell gets 421 `MISDIRECTED_REQUEST`, with the home cell in `apiBaseUrl`.
+
+![Token from another region refused (421)](assets/evidence/cross-region-421.png)
 
 ### Rate limit reached (429)
 
-Repeated sign-ins from one client exhaust the sign-in budget and get 429 with `Retry-After` and `RateLimit` headers.
+Twenty failed sign-ins from one client exhaust its budget; the next one gets 429 with `Retry-After` and `RateLimit` headers.
 
 ![Rate limit reached (429)](assets/evidence/rate-limit-429.png)
 
 ### Signed webhook received and verified
 
-The worker delivers `loan.disbursed` over HTTPS with Standard Webhooks headers; the receiver verifies the signature and rejects a tampered body.
+The worker delivers `loan.disbursed` over HTTPS with Standard Webhooks headers; the receiver verifies the signature and rejects a copy with one amount altered.
 
 ![Signed webhook received and verified](assets/evidence/signed-webhook.png)
 
-### Tests and coverage green
+### CI green
 
-Unit, database and end-to-end suites pass with coverage above the gate, plus the web client tests.
+A GitHub Actions run on `main`: lint, unit, database and end-to-end tests, the coverage gate, the dependency audit and the image scan all pass.
 
-![Tests and coverage green](assets/evidence/tests-coverage.png)
+![CI green](assets/evidence/tests-coverage.png)
+
+### Coverage report
+
+The top of the Vitest HTML coverage report from `npm run test:cov`, above the gate on every metric.
+
+![Coverage report](assets/evidence/tests-coverage-report.png)
 
 ---
 
