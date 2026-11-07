@@ -9,6 +9,19 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 10
+    ignore:
+      # Toolchain majors are planned upgrades, not weekly bumps: TypeScript 7
+      # does not yet emit the decorator metadata NestJS needs, @types/node must
+      # match the Node 24 LTS runtime, and ESLint 10 needs its config migrated
+      # together with @eslint/js and typescript-eslint.
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
+      - dependency-name: eslint
+        update-types: [version-update:semver-major]
+      - dependency-name: '@eslint/js'
+        update-types: [version-update:semver-major]
     groups:
       npm-minor-patch:
         update-types: [minor, patch]
