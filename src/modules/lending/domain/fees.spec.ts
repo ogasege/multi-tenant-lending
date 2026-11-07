@@ -59,11 +59,18 @@ describe('fees', () => {
     expect(() => lateFeeAmount(-1n, { type: 'FLAT', value: 1n })).toThrow(ValidationError);
   });
 
+  it('rejects a fee that rounds up to the whole principal (5,000 at 99.99 %)', () => {
+    expect(() =>
+      computeOrigination(5_000n, { type: 'PERCENTAGE', value: 9_999n, treatment: 'DEDUCTED' }),
+    ).toThrow(/less than the approved principal/);
+  });
+
   it('property: treatments conserve money', () => {
     fc.assert(
       fc.property(
-        // ≥ 5,000 units so even a 99.99 % fee rounds strictly below the principal
-        fc.bigInt({ min: 5_000n, max: 10n ** 12n }),
+        // > 5,000 units so even a 99.99 % fee rounds strictly below the principal: at exactly
+        // 5,000 the fee is 4,999.5, which half-even rounding makes 5,000 (= principal, rejected).
+        fc.bigInt({ min: 5_001n, max: 10n ** 12n }),
         fc.integer({ min: 0, max: 9_999 }),
         fc.constantFrom('DEDUCTED' as const, 'CAPITALISED' as const),
         (approved, bps, treatment) => {

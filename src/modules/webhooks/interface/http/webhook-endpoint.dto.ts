@@ -67,7 +67,7 @@ export class WebhookEndpointDto {
 
 export class WebhookEndpointWithSecretDto extends WebhookEndpointDto {
   @ApiProperty({
-    example: 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw',
+    example: 'whsec_<base64 of 32 random bytes>',
     description:
       'Standard Webhooks signing secret. Returned ONLY in this response: store it now. ' +
       'Verify deliveries with a Standard Webhooks library and deduplicate on `webhook-id`.',
