@@ -9,10 +9,6 @@ in the AWS region its regulator requires.
 
 ![Architecture overview: what the system is and how to read the diagrams](assets/diagrams/00-read-me-first.png)
 
-The diagrams in this README are exported from the architecture board in Miro
-(<https://miro.com/app/board/uXjVEQk5RNg=/>). Each one has a text (Mermaid) version underneath
-that you can expand.
-
 ---
 
 ## What it does
