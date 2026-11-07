@@ -45,20 +45,21 @@ audit, then the proofs (404 across lenders, 403 for the approver, 422 for a reus
 and 421 across regions, 429 on login floods). Every request has tests, and ids and tokens
 carry over from one request to the next.
 
-[![Run in Insomnia](https://insomnia.rest/images/run.svg)](https://app.insomnia.rest/run?label=Multi-tenant%20lending&uri=https%3A%2F%2Fraw.githubusercontent.com%2Fogasege%2Fmulti-tenant-lending%2Fmain%2Fapi-client%2Fmulti-tenant-lending.insomnia.yaml)
+[![Run in Insomnia](https://img.shields.io/badge/Run%20in-Insomnia-4000BF?logo=insomnia&logoColor=white)](https://app.insomnia.rest/run?label=Multi-tenant%20lending&uri=https%3A%2F%2Fraw.githubusercontent.com%2Fogasege%2Fmulti-tenant-lending%2Fmain%2Fapi-client%2Fmulti-tenant-lending.insomnia.yaml)
 
-<!-- run-in-postman -->
+[![Run in Postman](https://img.shields.io/badge/Run%20in-Postman-FF6C37?logo=postman&logoColor=white)](https://app.getpostman.com/run-collection/27730559-baba99a9-6df8-44ee-be78-f02478c6017f?action=collection%2Ffork&source=rip_markdown&collection-url=entityId%3D27730559-baba99a9-6df8-44ee-be78-f02478c6017f%26entityType%3Dcollection%26workspaceId%3D55415279-6760-4572-9436-dd13372e6948)
 
-| Tool       | Import                                                                                                                               |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Insomnia   | The button above (signed in to Insomnia), or **Import** → URL or file: [Insomnia collection][ac-insomnia] (both environments inside) |
-| Postman    | **Import** → paste the collection URL below, or the file: [Postman collection][ac-postman] (defaults to the Lagos cell)              |
-| Hoppscotch | **Import** → **Postman** → the downloaded [Postman collection][ac-postman] file, with scripts on; environments: same importer        |
+| Tool       | Import                                                                                                                                                                                                                                     |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Insomnia   | The button above (signed in to Insomnia), or **Import** → URL or file: [Insomnia collection][ac-insomnia] (both environments inside)                                                                                                       |
+| Postman    | The button above (forks the collection from the [public workspace][ac-postman-ws], which also has both environments), or **Import** → the collection URL below, or the file: [Postman collection][ac-postman] (defaults to the Lagos cell) |
+| Hoppscotch | **Import** → **Postman** → the downloaded [Postman collection][ac-postman] file, with scripts on; environments: same importer                                                                                                              |
 
 Optional environment files (Postman, Hoppscotch): [Lagos cell][ac-env-lagos],
 [Paris cell][ac-env-paris].
 
 [ac-insomnia]: https://raw.githubusercontent.com/ogasege/multi-tenant-lending/main/api-client/multi-tenant-lending.insomnia.yaml
+[ac-postman-ws]: https://www.postman.com/science-astronaut-86069034-s-team/multi-tenant-lending
 [ac-postman]: https://raw.githubusercontent.com/ogasege/multi-tenant-lending/main/api-client/multi-tenant-lending.postman_collection.json
 [ac-env-lagos]: https://raw.githubusercontent.com/ogasege/multi-tenant-lending/main/api-client/local-lagos.postman_environment.json
 [ac-env-paris]: https://raw.githubusercontent.com/ogasege/multi-tenant-lending/main/api-client/local-paris.postman_environment.json
