@@ -45,6 +45,8 @@ jobs:
       - run: npm run format:check
       # The committed OpenAPI document must match the code (contract drift).
       - run: npm run openapi:check
+      # The committed API-client collections must match their definition.
+      - run: npm run api-client:check
 
   unit:
     name: Unit tests

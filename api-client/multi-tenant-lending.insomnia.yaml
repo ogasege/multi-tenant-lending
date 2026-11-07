@@ -1,0 +1,1963 @@
+type: collection.insomnia.rest/5.0
+schema_version: "5.1"
+name: Multi-tenant lending
+meta:
+  id: wrk_06dcc04645601ec7a4439f849a86b3e7
+  created: 1794009600000
+  modified: 1794009600000
+  description: "Reviewer walkthrough of the 10mg lending API against the local stack: one loan from lender registration to repayment, then the safety proofs. Run the folders in order. Fill in the passwords (printed by `make seed`, or the SEED_* values in .env) and the demo applicant's national id (seed output, Demo applicants table); choose any `applicant_password` (12+ characters with upper case, lower case and a digit)."
+collection:
+  - name: 0 Health
+    meta:
+      id: fld_62484e22a6a5ade1ba25cb1b7c55c4b8
+      created: 1794009600000
+      modified: 1794009600000
+      sortKey: 0
+      description: Both cells answer readiness checks (database and Redis up). No login needed.
+    children:
+      - url: "{{ _.base_url }}/health/ready"
+        name: Readiness of this cell
+        meta:
+          id: req_86164eca033e5c1bae8d08d52bd5e9d3
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 0
+          description: The cell named by `base_url`.
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: none
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("status is \"ok\"", () => {
+              insomnia.expect(body.status).to.eql("ok");
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.remote_url }}/health/ready"
+        name: Readiness of the other cell
+        meta:
+          id: req_676e14b9b0d0571120afe60ca63e95bd
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 1
+          description: The second region (`remote_url`). Only up with the two-region stack (`make demo-cells`).
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: none
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("status is \"ok\"", () => {
+              insomnia.expect(body.status).to.eql("ok");
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+  - name: 1 Platform
+    meta:
+      id: fld_d294fcce0cc88587843099d85dd805ae
+      created: 1794009600000
+      modified: 1794009600000
+      sortKey: 1
+      description: The platform operator registers lenders. Each run registers a new lender with a random slug, homed in this cell; folder 8 uses it to show that one lender cannot see another.
+    children:
+      - url: "{{ _.base_url }}/v1/platform/auth/login"
+        name: Log in as platform admin
+        meta:
+          id: req_8815dabea01fc7b9e50486b3cb41082d
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 0
+          description: Platform administrators use their own login route and token audience.
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "email": "{{ _.platform_admin_email }}",
+              "password": "{{ _.platform_admin_password }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: none
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("tokenType is \"Bearer\"", () => {
+              insomnia.expect(body.tokenType).to.eql("Bearer");
+            });
+            try {
+              insomnia.environment.set('platform_token', body.accessToken);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/platform/institutions"
+        name: Register a lender
+        meta:
+          id: req_c2afbc789fa235b427f84944178dfe09
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 1
+          description: Creates the tenant, its branding, its chart of accounts and its first admin in one transaction. `homeRegion` must be this cell (another region answers 422 WRONG_CELL). The first admin password is generated per run and kept in `new_lender_admin_password`.
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "slug": "{{ _.new_lender_slug }}",
+              "legalName": "Demo Lender {{ _.new_lender_slug }} Ltd",
+              "countryCode": "{{ _.country_code }}",
+              "defaultCurrency": "{{ _.currency }}",
+              "supportedCurrencies": [
+                "{{ _.currency }}"
+              ],
+              "lenderType": "MICROFINANCE_BANK",
+              "homeRegion": "{{ _.cell_region }}",
+              "timezone": "{{ _.timezone }}",
+              "branding": {
+                "displayName": "Demo Lender {{ _.new_lender_slug }}",
+                "primaryColor": "#0B5FFF",
+                "secondaryColor": "#111827",
+                "locale": "{{ _.locale }}"
+              },
+              "firstAdmin": {
+                "fullName": "Demo Admin",
+                "email": "admin@{{ _.new_lender_slug }}.example",
+                "password": "{{ _.new_lender_admin_password }}"
+              }
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: bearer
+          token: "{{ _.platform_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          preRequest: |-
+            const $uuid = () =>
+              'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+                const r = Math.floor(Math.random() * 16);
+                return (c === 'x' ? r : (r % 4) + 8).toString(16);
+              });
+            const suffix = Math.random().toString(36).slice(2, 8).padEnd(6, '0');
+            insomnia.environment.set('new_lender_slug', `demo-lender-${suffix}`);
+            insomnia.environment.set('new_lender_admin_password', `Demo-${$uuid().slice(0, 8)}-Pass1`);
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 201", () => {
+              insomnia.expect(insomnia.response.code).to.eql(201);
+            });
+            insomnia.test("slug equals new_lender_slug", () => {
+              insomnia.expect(body.slug).to.eql(insomnia.variables.get('new_lender_slug'));
+            });
+            insomnia.test("homeRegion equals cell_region", () => {
+              insomnia.expect(body.homeRegion).to.eql(insomnia.variables.get('cell_region'));
+            });
+            insomnia.test("status is \"ACTIVE\"", () => {
+              insomnia.expect(body.status).to.eql("ACTIVE");
+            });
+            insomnia.test("firstAdmin.password is not exposed", () => {
+              insomnia.expect(body.firstAdmin.password).to.not.exist;
+            });
+            insomnia.test("firstAdmin.passwordHash is not exposed", () => {
+              insomnia.expect(body.firstAdmin.passwordHash).to.not.exist;
+            });
+            try {
+              insomnia.environment.set('new_lender_id', body.id);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/platform/institutions?limit=20"
+        name: List lenders
+        meta:
+          id: req_eafdf32f49c3870f523519d8d6a871f6
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 2
+          description: Cursor-paginated; `limit` is capped at 100.
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: bearer
+          token: "{{ _.platform_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("items is a list of at most 20", () => {
+              insomnia.expect(Array.isArray(body.items) && body.items.length <= 20).to.eql(true);
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+  - name: 2 Lender staff
+    meta:
+      id: fld_8e429e75314dd8cc5d27e8d9ffab2d49
+      created: 1794009600000
+      modified: 1794009600000
+      sortKey: 2
+      description: A lender admin reads its white-label branding and its loan products, then prices the checkout cart. The tenant comes from the token only; no request names a tenant id.
+    children:
+      - url: "{{ _.base_url }}/v1/auth/login"
+        name: Log in as lender admin
+        meta:
+          id: req_16be5cdc234f01d4ecad105b2627813c
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 0
+          description: "Staff log in with the lender slug, their email and password. Tokens last 15 minutes: if a later request answers 401, send its folder login again."
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "institutionSlug": "{{ _.lender_slug }}",
+              "email": "{{ _.admin_email }}",
+              "password": "{{ _.staff_password }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: none
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("tokenType is \"Bearer\"", () => {
+              insomnia.expect(body.tokenType).to.eql("Bearer");
+            });
+            insomnia.test("accessToken is present", () => {
+              insomnia.expect(body.accessToken).to.exist;
+            });
+            try {
+              insomnia.environment.set('admin_token', body.accessToken);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/me"
+        name: Who am I
+        meta:
+          id: req_01990cfae8d654ee0f4d5ddee492a051
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 1
+          description: Role and tenant are read from the signed token.
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: bearer
+          token: "{{ _.admin_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("role is \"INSTITUTION_ADMIN\"", () => {
+              insomnia.expect(body.role).to.eql("INSTITUTION_ADMIN");
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/institution/branding"
+        name: Read branding (admin)
+        meta:
+          id: req_c588e2ba573ac9806089e1ee9a6c48ca
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 2
+          description: Name, colours, contacts, locale and the optimistic-concurrency `version`.
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: bearer
+          token: "{{ _.admin_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("displayName is present", () => {
+              insomnia.expect(body.displayName).to.exist;
+            });
+            insomnia.test("version is present", () => {
+              insomnia.expect(body.version).to.exist;
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/institutions/{{ _.lender_slug }}/branding"
+        name: Read branding (public)
+        meta:
+          id: req_142be7de432e9418019d2caff6644525
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 3
+          description: What a white-label front-end loads before anyone logs in.
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: none
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("slug equals lender_slug", () => {
+              insomnia.expect(body.slug).to.eql(insomnia.variables.get('lender_slug'));
+            });
+            insomnia.test("primaryColor is present", () => {
+              insomnia.expect(body.primaryColor).to.exist;
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loan-products?limit=100"
+        name: List loan products
+        meta:
+          id: req_245b0218af46d3b7923a8f80d19eec4f
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 4
+          description: Stores the id of the checkout product (`product_code`) as `product_id`.
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: bearer
+          token: "{{ _.admin_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("the checkout product (product_code) exists", () => {
+              insomnia.expect(body.items.some((p) => p.code === insomnia.variables.get('product_code'))).to.eql(true);
+            });
+            try {
+              if (body.items && body.items.some((p) => p.code === insomnia.variables.get('product_code'))) insomnia.environment.set('product_id', body.items.find((p) => p.code === insomnia.variables.get('product_code')).id);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loan-products/{{ _.product_id }}/quote"
+        name: Quote the cart
+        meta:
+          id: req_fda8f3993072cdf695e3e7dc06df088a
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 5
+          description: "Cost of credit before anyone commits: financed principal (cart plus fee), total repayable, total cost of credit and the APR, checked against the platform APR cap."
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "principal": "{{ _.cart_principal }}",
+              "term": 30
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: bearer
+          token: "{{ _.admin_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("currency equals currency", () => {
+              insomnia.expect(body.currency).to.eql(insomnia.variables.get('currency'));
+            });
+            insomnia.test("aprWithinCap is true", () => {
+              insomnia.expect(body.aprWithinCap).to.eql(true);
+            });
+            insomnia.test("totalRepayable is present", () => {
+              insomnia.expect(body.totalRepayable).to.exist;
+            });
+            insomnia.test("aprBps is present", () => {
+              insomnia.expect(body.aprBps).to.exist;
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+  - name: 3 Pharmacy
+    meta:
+      id: fld_20b04a4f018b89f369ce009213afc636
+      created: 1794009600000
+      modified: 1794009600000
+      sortKey: 3
+      description: "A pharmacy signs up with a demo applicant (known APPROVE decision) and finances its cart at checkout. Each national id signs up once per lender: on a second run the sign-up answers 409 and the login that follows still works."
+    children:
+      - url: "{{ _.base_url }}/v1/institutions/{{ _.lender_slug }}/customers/register"
+        name: Sign up (demo applicant)
+        meta:
+          id: req_58a8340ebd0219a918f5c77864629e31
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 0
+          description: Self-registration for this lender. The national id is stored only as a keyed HMAC plus its last 4 digits, and never returned. 409 means this applicant already signed up (the next request logs in instead). At most 30 sign-ups per lender per hour.
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "customerType": "BUSINESS",
+              "businessName": "{{ _.applicant_business_name }}",
+              "businessRegistrationNumber": "{{ _.applicant_registration_number }}",
+              "operatingLicenceNumber": "{{ _.applicant_licence_number }}",
+              "firstName": "{{ _.applicant_first_name }}",
+              "lastName": "{{ _.applicant_last_name }}",
+              "email": "{{ _.applicant_email }}",
+              "phone": "{{ _.applicant_phone }}",
+              "dateOfBirth": "1984-06-15",
+              "nationalId": "{{ _.applicant_national_id }}",
+              "employmentStatus": "BUSINESS_OWNER",
+              "monthsInEmployment": 60,
+              "currency": "{{ _.currency }}",
+              "monthlyIncome": "{{ _.applicant_monthly_income }}",
+              "monthlyExpenses": "{{ _.applicant_monthly_expenses }}",
+              "existingMonthlyDebt": "0",
+              "password": "{{ _.applicant_password }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: none
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is one of 201, 409", () => {
+              insomnia.expect(insomnia.response.code).to.be.oneOf([201,409]);
+            });
+            insomnia.test("national id is not returned", () => {
+              insomnia.expect(JSON.stringify(body).includes(String(insomnia.variables.get('applicant_national_id')))).to.eql(false);
+            });
+            try {
+              if (insomnia.response.code === 201) insomnia.environment.set('customer_token', body.tokens.accessToken);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/auth/login"
+        name: Log in as pharmacy
+        meta:
+          id: req_c5df6b66358e0b3aadcbe315dd8f8fa3
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 1
+          description: Borrowers use the same login route as staff; the token carries the CUSTOMER role.
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "institutionSlug": "{{ _.lender_slug }}",
+              "email": "{{ _.applicant_email }}",
+              "password": "{{ _.applicant_password }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: none
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("tokenType is \"Bearer\"", () => {
+              insomnia.expect(body.tokenType).to.eql("Bearer");
+            });
+            insomnia.test("accessToken is present", () => {
+              insomnia.expect(body.accessToken).to.exist;
+            });
+            try {
+              insomnia.environment.set('customer_token', body.accessToken);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/customers/me"
+        name: My customer profile
+        meta:
+          id: req_78e1950be66968fa44f3fe2f059dc2bf
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 2
+          description: A customer only ever sees its own record.
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: bearer
+          token: "{{ _.customer_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("email equals applicant_email", () => {
+              insomnia.expect(body.email).to.eql(insomnia.variables.get('applicant_email'));
+            });
+            insomnia.test("nationalId is not exposed", () => {
+              insomnia.expect(body.nationalId).to.not.exist;
+            });
+            insomnia.test("nationalIdHmac is not exposed", () => {
+              insomnia.expect(body.nationalIdHmac).to.not.exist;
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loan-applications"
+        name: Apply at checkout
+        meta:
+          id: req_6cfcef5dd7797427d36e3650ee15a67a
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 3
+          description: "Finances the cart: the supplier is paid directly at disbursement. A fresh `Idempotency-Key` and checkout order reference are generated per run."
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "productId": "{{ _.product_id }}",
+              "principal": "{{ _.cart_principal }}",
+              "term": 30,
+              "externalOrderReference": "{{ _.order_reference }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+          - name: Idempotency-Key
+            value: "{{ _.application_key }}"
+        authentication:
+          type: bearer
+          token: "{{ _.customer_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          preRequest: |-
+            const $uuid = () =>
+              'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+                const r = Math.floor(Math.random() * 16);
+                return (c === 'x' ? r : (r % 4) + 8).toString(16);
+              });
+            insomnia.environment.set('application_key', $uuid());
+            insomnia.environment.set('order_reference', `ORD-${Date.now()}`);
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 201", () => {
+              insomnia.expect(insomnia.response.code).to.eql(201);
+            });
+            insomnia.test("status is \"SUBMITTED\"", () => {
+              insomnia.expect(body.status).to.eql("SUBMITTED");
+            });
+            insomnia.test("productId equals product_id", () => {
+              insomnia.expect(body.productId).to.eql(insomnia.variables.get('product_id'));
+            });
+            try {
+              insomnia.environment.set('application_id', body.id);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+  - name: 4 Credit officer
+    meta:
+      id: fld_ecc4873a1694eb0de0b33d68f0df091d
+      created: 1794009600000
+      modified: 1794009600000
+      sortKey: 4
+      description: The credit officer runs the explainable scorecard, then approves.
+    children:
+      - url: "{{ _.base_url }}/v1/auth/login"
+        name: Log in as credit officer
+        meta:
+          id: req_56fbfb1e71de5c9fbfa919bf0da8a413
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 0
+          description: Credit officers assess, approve and reject; they cannot disburse.
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "institutionSlug": "{{ _.lender_slug }}",
+              "email": "{{ _.credit_email }}",
+              "password": "{{ _.staff_password }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: none
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("tokenType is \"Bearer\"", () => {
+              insomnia.expect(body.tokenType).to.eql("Bearer");
+            });
+            insomnia.test("accessToken is present", () => {
+              insomnia.expect(body.accessToken).to.exist;
+            });
+            try {
+              insomnia.environment.set('credit_token', body.accessToken);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loan-applications/{{ _.application_id }}/assess"
+        name: Assess the application
+        meta:
+          id: req_ddbb9e05a2a232fd5ec5c9977e525e5a
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 1
+          description: "Mock bureau plus scorecard: decision, grade, bureau score, debt-to-income and reason codes. The demo applicant is approved as requested."
+          isPrivate: false
+        method: POST
+        headers: []
+        authentication:
+          type: bearer
+          token: "{{ _.credit_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("decision is \"APPROVE\"", () => {
+              insomnia.expect(body.decision).to.eql("APPROVE");
+            });
+            insomnia.test("grade is present", () => {
+              insomnia.expect(body.grade).to.exist;
+            });
+            insomnia.test("bureauScore is present", () => {
+              insomnia.expect(body.bureauScore).to.exist;
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loan-applications/{{ _.application_id }}/approve"
+        name: Approve
+        meta:
+          id: req_5deffccf320bdf608be951b06a6a6846
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 2
+          description: Creates the loan in PENDING_DISBURSEMENT; stores its id as `loan_id`.
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: "{}"
+        headers:
+          - name: Content-Type
+            value: application/json
+          - name: Idempotency-Key
+            value: "{{ _.approval_key }}"
+        authentication:
+          type: bearer
+          token: "{{ _.credit_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          preRequest: |-
+            const $uuid = () =>
+              'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+                const r = Math.floor(Math.random() * 16);
+                return (c === 'x' ? r : (r % 4) + 8).toString(16);
+              });
+            insomnia.environment.set('approval_key', $uuid());
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 201", () => {
+              insomnia.expect(insomnia.response.code).to.eql(201);
+            });
+            insomnia.test("application.status is \"APPROVED\"", () => {
+              insomnia.expect(body.application.status).to.eql("APPROVED");
+            });
+            insomnia.test("loan.status is \"PENDING_DISBURSEMENT\"", () => {
+              insomnia.expect(body.loan.status).to.eql("PENDING_DISBURSEMENT");
+            });
+            try {
+              insomnia.environment.set('loan_id', body.loan.id);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+  - name: 5 Finance
+    meta:
+      id: fld_eab762a03fd979a04cc4706e6536d382
+      created: 1794009600000
+      modified: 1794009600000
+      sortKey: 5
+      description: "The finance officer releases the money to the supplier. The disbursement is sent twice with one `Idempotency-Key`, as a client would after a timeout: the second answer is the stored one (`Idempotent-Replayed: true`) and the supplier is paid once."
+    children:
+      - url: "{{ _.base_url }}/v1/auth/login"
+        name: Log in as finance officer
+        meta:
+          id: req_3a91b3584e67d2474983619296a6f22d
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 0
+          description: Finance officers disburse, record repayments and read the ledger and audit log.
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "institutionSlug": "{{ _.lender_slug }}",
+              "email": "{{ _.finance_email }}",
+              "password": "{{ _.staff_password }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: none
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("tokenType is \"Bearer\"", () => {
+              insomnia.expect(body.tokenType).to.eql("Bearer");
+            });
+            insomnia.test("accessToken is present", () => {
+              insomnia.expect(body.accessToken).to.exist;
+            });
+            try {
+              insomnia.environment.set('finance_token', body.accessToken);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loans/{{ _.loan_id }}/disburse"
+        name: Disburse
+        meta:
+          id: req_644594f248da58e5f1a695a88afedf1e
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 1
+          description: Generates a new `disbursement_key` and pays the supplier (mock provider).
+          isPrivate: false
+        method: POST
+        headers:
+          - name: Idempotency-Key
+            value: "{{ _.disbursement_key }}"
+        authentication:
+          type: bearer
+          token: "{{ _.finance_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          preRequest: |-
+            const $uuid = () =>
+              'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+                const r = Math.floor(Math.random() * 16);
+                return (c === 'x' ? r : (r % 4) + 8).toString(16);
+              });
+            insomnia.environment.set('disbursement_key', $uuid());
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("status is \"ACTIVE\"", () => {
+              insomnia.expect(body.status).to.eql("ACTIVE");
+            });
+            insomnia.test("providerReference is present", () => {
+              insomnia.expect(body.providerReference).to.exist;
+            });
+            insomnia.test("not a replay", () => {
+              insomnia.expect(insomnia.response.headers.get('Idempotent-Replayed')).to.not.exist;
+            });
+            try {
+              insomnia.environment.set('provider_reference', body.providerReference);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loans/{{ _.loan_id }}/disburse"
+        name: Disburse again (resend same key)
+        meta:
+          id: req_1444c6976a4d102673b6f3c7f1b46cb8
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 2
+          description: "Same request, same `disbursement_key`: the stored response comes back."
+          isPrivate: false
+        method: POST
+        headers:
+          - name: Idempotency-Key
+            value: "{{ _.disbursement_key }}"
+        authentication:
+          type: bearer
+          token: "{{ _.finance_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("Idempotent-Replayed is true", () => {
+              insomnia.expect(insomnia.response.headers.get('Idempotent-Replayed')).to.eql("true");
+            });
+            insomnia.test("providerReference equals provider_reference", () => {
+              insomnia.expect(body.providerReference).to.eql(insomnia.variables.get('provider_reference'));
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+  - name: 6 Repayment
+    meta:
+      id: fld_af8e1492cb59aaebff4de54f73ec687a
+      created: 1794009600000
+      modified: 1794009600000
+      sortKey: 6
+      description: The pharmacy pays off the loan. The repayment is also sent twice with one key; folder 8 reuses that key for a different amount.
+    children:
+      - url: "{{ _.base_url }}/v1/loans/{{ _.loan_id }}/payoff-quote"
+        name: Payoff quote
+        meta:
+          id: req_7998dc83f2f0eea84e67ce2b4e08a792
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 0
+          description: What clears the loan today; stores `payoff_total`.
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: bearer
+          token: "{{ _.finance_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("loanId equals loan_id", () => {
+              insomnia.expect(body.loanId).to.eql(insomnia.variables.get('loan_id'));
+            });
+            insomnia.test("total is present", () => {
+              insomnia.expect(body.total).to.exist;
+            });
+            try {
+              insomnia.environment.set('payoff_total', body.total);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loans/{{ _.loan_id }}/repayments"
+        name: Record repayment
+        meta:
+          id: req_4c8baee9a0e18aefa1cf7233039ced8f
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 1
+          description: Bank transfer of the payoff amount. Every channel except cash needs a bank reference that is new for the lender; one is generated per run.
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "amount": "{{ _.payoff_total }}",
+              "channel": "BANK_TRANSFER",
+              "externalReference": "{{ _.bank_reference }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+          - name: Idempotency-Key
+            value: "{{ _.repayment_key }}"
+        authentication:
+          type: bearer
+          token: "{{ _.finance_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          preRequest: |-
+            const $uuid = () =>
+              'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+                const r = Math.floor(Math.random() * 16);
+                return (c === 'x' ? r : (r % 4) + 8).toString(16);
+              });
+            insomnia.environment.set('repayment_key', $uuid());
+            insomnia.environment.set('bank_reference', `NIP-${Date.now()}`);
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 201", () => {
+              insomnia.expect(insomnia.response.code).to.eql(201);
+            });
+            insomnia.test("amount equals payoff_total", () => {
+              insomnia.expect(body.amount).to.eql(insomnia.variables.get('payoff_total'));
+            });
+            insomnia.test("loanStatus is \"CLOSED\"", () => {
+              insomnia.expect(body.loanStatus).to.eql("CLOSED");
+            });
+            try {
+              insomnia.environment.set('repayment_id', body.id);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loans/{{ _.loan_id }}/repayments"
+        name: Record repayment again (resend same key)
+        meta:
+          id: req_e202f87918bd3fa67b95a4e441ac8821
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 2
+          description: "Replayed: one repayment is recorded, not two."
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "amount": "{{ _.payoff_total }}",
+              "channel": "BANK_TRANSFER",
+              "externalReference": "{{ _.bank_reference }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+          - name: Idempotency-Key
+            value: "{{ _.repayment_key }}"
+        authentication:
+          type: bearer
+          token: "{{ _.finance_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 201", () => {
+              insomnia.expect(insomnia.response.code).to.eql(201);
+            });
+            insomnia.test("Idempotent-Replayed is true", () => {
+              insomnia.expect(insomnia.response.headers.get('Idempotent-Replayed')).to.eql("true");
+            });
+            insomnia.test("id equals repayment_id", () => {
+              insomnia.expect(body.id).to.eql(insomnia.variables.get('repayment_id'));
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loans/{{ _.loan_id }}"
+        name: Read the loan
+        meta:
+          id: req_00f38121b8b7ebc1b76613149d18659e
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 3
+          description: Fully repaid.
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: bearer
+          token: "{{ _.finance_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("status is \"CLOSED\"", () => {
+              insomnia.expect(body.status).to.eql("CLOSED");
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+  - name: 7 Ledger and audit
+    meta:
+      id: fld_6e317bcd6839e8877395411b47b2b89d
+      created: 1794009600000
+      modified: 1794009600000
+      sortKey: 7
+      description: The double-entry books balance and the hash-chained audit log verifies.
+    children:
+      - url: "{{ _.base_url }}/v1/ledger/trial-balance?currency={{ _.currency }}"
+        name: Trial balance
+        meta:
+          id: req_ef628f2541ea090fde51d15b87ed5ade
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 0
+          description: Sum of debits equals sum of credits for the currency.
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: bearer
+          token: "{{ _.finance_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("balanced is true", () => {
+              insomnia.expect(body.balanced).to.eql(true);
+            });
+            insomnia.test("debits equal credits", () => {
+              insomnia.expect(body.totalDebits === body.totalCredits).to.eql(true);
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/audit-logs/verify"
+        name: Verify the audit chain
+        meta:
+          id: req_5cc12eccca2040dfbeab4a815d63b638
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 1
+          description: Recomputes every entry hash of this lender’s audit log.
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: bearer
+          token: "{{ _.finance_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("valid is true", () => {
+              insomnia.expect(body.valid).to.eql(true);
+            });
+            insomnia.test("entriesChecked is present", () => {
+              insomnia.expect(body.entriesChecked).to.exist;
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+  - name: 8 Proofs
+    meta:
+      id: fld_485ee5f83c3b2f5ea31677c90f331ac2
+      created: 1794009600000
+      modified: 1794009600000
+      sortKey: 8
+      description: "The same rules from the outside: another lender gets 404, the approver gets 403, a reused key with another body gets 422, a login in the wrong region gets 307, a token from another region gets 421, a login flood gets 429. Run folders 1 to 6 first."
+    children:
+      - url: "{{ _.base_url }}/v1/auth/login"
+        name: Log in as admin of the lender from folder 1
+        meta:
+          id: req_547deeaebcf6084b1f22a502d8e8a1c3
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 0
+          description: A different tenant on the same cell.
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "institutionSlug": "{{ _.new_lender_slug }}",
+              "email": "admin@{{ _.new_lender_slug }}.example",
+              "password": "{{ _.new_lender_admin_password }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: none
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("tokenType is \"Bearer\"", () => {
+              insomnia.expect(body.tokenType).to.eql("Bearer");
+            });
+            insomnia.test("accessToken is present", () => {
+              insomnia.expect(body.accessToken).to.exist;
+            });
+            try {
+              insomnia.environment.set('new_lender_admin_token', body.accessToken);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loans/{{ _.loan_id }}"
+        name: "Another lender reads our loan: 404"
+        meta:
+          id: req_1a0bb52ed623e3d2809fbf281010f437
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 1
+          description: Row-level security hides the loan; the answer is the same as for an id that does not exist, so nothing reveals that it is there.
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: bearer
+          token: "{{ _.new_lender_admin_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 404", () => {
+              insomnia.expect(insomnia.response.code).to.eql(404);
+            });
+            insomnia.test("code is \"NOT_FOUND\"", () => {
+              insomnia.expect(body.code).to.eql("NOT_FOUND");
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loans/{{ _.loan_id }}/disburse"
+        name: "Approver disburses: 403"
+        meta:
+          id: req_b5b34b812c0a3c79f64de893199ca9ca
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 2
+          description: "Segregation of duties: the role that approves can never release money."
+          isPrivate: false
+        method: POST
+        headers:
+          - name: Idempotency-Key
+            value: "{{ _.sod_key }}"
+        authentication:
+          type: bearer
+          token: "{{ _.credit_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          preRequest: |-
+            const $uuid = () =>
+              'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+                const r = Math.floor(Math.random() * 16);
+                return (c === 'x' ? r : (r % 4) + 8).toString(16);
+              });
+            insomnia.environment.set('sod_key', $uuid());
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 403", () => {
+              insomnia.expect(insomnia.response.code).to.eql(403);
+            });
+            insomnia.test("code is \"FORBIDDEN\"", () => {
+              insomnia.expect(body.code).to.eql("FORBIDDEN");
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loans/{{ _.loan_id }}/repayments"
+        name: "Reuse a key for another amount: 422"
+        meta:
+          id: req_ab45dc3bd7953a4cbd282ee2579211ec
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 3
+          description: The repayment key from folder 6 with a different body is refused.
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "amount": "100",
+              "channel": "BANK_TRANSFER",
+              "externalReference": "{{ _.bank_reference }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+          - name: Idempotency-Key
+            value: "{{ _.repayment_key }}"
+        authentication:
+          type: bearer
+          token: "{{ _.finance_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 422", () => {
+              insomnia.expect(insomnia.response.code).to.eql(422);
+            });
+            insomnia.test("code is \"IDEMPOTENCY_KEY_REUSED\"", () => {
+              insomnia.expect(body.code).to.eql("IDEMPOTENCY_KEY_REUSED");
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/auth/login"
+        name: "Log in to a lender of the other region: 307"
+        meta:
+          id: req_743721d7a63689dd38fed7e144f47d05
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 4
+          description: "The lender lives in the other cell: the login is redirected there with method and body kept. Redirects are not followed here so the 307 stays visible. Needs the two-region stack."
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "institutionSlug": "{{ _.remote_lender_slug }}",
+              "email": "{{ _.remote_staff_email }}",
+              "password": "{{ _.staff_password }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: none
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 307", () => {
+              insomnia.expect(insomnia.response.code).to.eql(307);
+            });
+            insomnia.test("Location is the other cell", () => {
+              insomnia.expect(insomnia.response.headers.get('Location')).to.eql(insomnia.variables.get('remote_login_url'));
+            });
+            insomnia.test("X-Tenant-Cell names the other region", () => {
+              insomnia.expect(insomnia.response.headers.get('X-Tenant-Cell')).to.eql(insomnia.variables.get('remote_cell_region'));
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: off
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.remote_url }}/v1/auth/login"
+        name: Log in as staff of the other region (at its home cell)
+        meta:
+          id: req_ff3e56c3211aacc6c48920641dc8a96f
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 5
+          description: The same login sent where the redirect pointed.
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "institutionSlug": "{{ _.remote_lender_slug }}",
+              "email": "{{ _.remote_staff_email }}",
+              "password": "{{ _.staff_password }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: none
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 200", () => {
+              insomnia.expect(insomnia.response.code).to.eql(200);
+            });
+            insomnia.test("tokenType is \"Bearer\"", () => {
+              insomnia.expect(body.tokenType).to.eql("Bearer");
+            });
+            insomnia.test("accessToken is present", () => {
+              insomnia.expect(body.accessToken).to.exist;
+            });
+            try {
+              insomnia.environment.set('remote_token', body.accessToken);
+            } catch (e) {
+              // not in this response
+            }
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/loans"
+        name: "Use that token in this region: 421"
+        meta:
+          id: req_730f6a7eab38a66c4f43be76324a337a
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 6
+          description: Tokens carry their cell; the problem body names the right API base URL.
+          isPrivate: false
+        method: GET
+        headers: []
+        authentication:
+          type: bearer
+          token: "{{ _.remote_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 421", () => {
+              insomnia.expect(insomnia.response.code).to.eql(421);
+            });
+            insomnia.test("apiBaseUrl equals remote_url", () => {
+              insomnia.expect(body.apiBaseUrl).to.eql(insomnia.variables.get('remote_url'));
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/auth/login"
+        name: "Flood the login: 429"
+        meta:
+          id: req_d47b6e1524b0924cbe30f2624ecdb41d
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 7
+          description: "Credential routes allow 20 attempts per minute per client. The pre-request script first sends 20 failed logins for an account that does not exist, so this request is over the limit (to repeat by hand instead, send it 21 times within a minute). Locally the API trusts one proxy hop, so the burst uses a random documentation address (198.51.100.0/24) in `X-Forwarded-For`: it spends that address’s budget, not yours. Behind the AWS load balancer the real client address is used instead."
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "institutionSlug": "{{ _.lender_slug }}",
+              "email": "nobody@example.invalid",
+              "password": "not-a-real-password-1A"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+          - name: X-Forwarded-For
+            value: "{{ _.rate_limit_client_ip }}"
+        authentication:
+          type: none
+        scripts:
+          preRequest: |-
+            insomnia.environment.set('rate_limit_client_ip', `198.51.100.${1 + Math.floor(Math.random() * 254)}`);
+            // Spend this client's login budget: 20 failed logins before the request.
+            const sendOne = () =>
+              new Promise((resolve) =>
+                insomnia.sendRequest(
+                  {
+                    url: `${insomnia.variables.get('base_url')}/v1/auth/login`,
+                    method: 'POST',
+                    header: [
+                      { key: 'Content-Type', value: 'application/json' },
+                      { key: 'X-Forwarded-For', value: insomnia.variables.get('rate_limit_client_ip') },
+                    ],
+                    body: { mode: 'raw', raw: JSON.stringify({ institutionSlug: insomnia.variables.get('lender_slug'), email: 'nobody@example.invalid', password: 'not-a-real-password-1A' }) },
+                  },
+                  () => resolve(),
+                ),
+              );
+            for (let i = 0; i < 20; i += 1) await sendOne();
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 429", () => {
+              insomnia.expect(insomnia.response.code).to.eql(429);
+            });
+            insomnia.test("code is \"RATE_LIMITED\"", () => {
+              insomnia.expect(body.code).to.eql("RATE_LIMITED");
+            });
+            insomnia.test("Retry-After is set", () => {
+              insomnia.expect(insomnia.response.headers.get('Retry-After')).to.exist;
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+      - url: "{{ _.base_url }}/v1/webhook-endpoints"
+        name: Create a webhook endpoint
+        meta:
+          id: req_60bd7b7c58e0e6ad3c26e7a44da8c454
+          created: 1794009600000
+          modified: 1794009600000
+          sortKey: 8
+          description: On the lender from folder 1. HTTPS only, public addresses only (SSRF guard). The signing secret is returned once, here.
+          isPrivate: false
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "url": "{{ _.webhook_url }}",
+              "eventTypes": [
+                "loan.disbursed",
+                "repayment.received"
+              ]
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: bearer
+          token: "{{ _.new_lender_admin_token }}"
+          prefix: ""
+          disabled: false
+        scripts:
+          afterResponse: |-
+            let body = {};
+            try {
+              body = insomnia.response.json() ?? {};
+            } catch (e) {
+              // no JSON body
+            }
+            insomnia.test("status is 201", () => {
+              insomnia.expect(insomnia.response.code).to.eql(201);
+            });
+            insomnia.test("status is \"ACTIVE\"", () => {
+              insomnia.expect(body.status).to.eql("ACTIVE");
+            });
+            insomnia.test("secret is present", () => {
+              insomnia.expect(body.secret).to.exist;
+            });
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: false
+            store: false
+          rebuildPath: true
+cookieJar:
+  name: Default Jar
+  meta:
+    id: jar_06dcc04645601ec7a4439f849a86b3e7
+    created: 1794009600000
+    modified: 1794009600000
+environments:
+  name: Base Environment
+  meta:
+    id: env_5c95ca8fc7d48056be4346eb0fe72764
+    created: 1794009600000
+    modified: 1794009600000
+    isPrivate: false
+  data:
+    platform_admin_email: ops@platform.example
+    platform_admin_password: "<from make seed: SEED_PLATFORM_ADMIN_PASSWORD>"
+    staff_password: "<from make seed: SEED_STAFF_PASSWORD>"
+    applicant_password: "<choose one: 12+ characters, upper and lower case, a digit>"
+    product_code: SUPPLIER_30
+    webhook_url: https://example.com/hooks/10mg
+  subEnvironments:
+    - name: Lagos cell (localhost:3000)
+      meta:
+        id: env_53b02a6e3d69e3ffd9e86de86b38e8d7
+        created: 1794009600000
+        modified: 1794009600000
+        sortKey: 0
+        description: ""
+        isPrivate: false
+      data:
+        base_url: http://localhost:3000
+        remote_url: http://localhost:3001
+        remote_login_url: http://localhost:3001/v1/auth/login
+        cell_region: af-south-1
+        remote_cell_region: eu-west-3
+        lender_slug: arewa-pharmafinance
+        admin_email: admin@arewa-pharmafinance.example
+        credit_email: credit@arewa-pharmafinance.example
+        finance_email: finance@arewa-pharmafinance.example
+        remote_lender_slug: teranga-sante
+        remote_staff_email: credit@teranga-sante.example
+        country_code: NG
+        currency: NGN
+        timezone: Africa/Lagos
+        locale: en-NG
+        cart_principal: "50000000"
+        applicant_email: demo.approve-1@arewa-pharmafinance.customers.example
+        applicant_national_id: "<from make seed: Demo applicants table, an APPROVE national id for this lender>"
+        applicant_business_name: GoodHealth Pharmacy Ltd
+        applicant_registration_number: RC1234567
+        applicant_licence_number: PCN/PREM/2024/900
+        applicant_first_name: Ngozi
+        applicant_last_name: Adebayo
+        applicant_phone: "+234801234600"
+        applicant_monthly_income: "300000000"
+        applicant_monthly_expenses: "100000000"
+    - name: Paris cell (localhost:3001)
+      meta:
+        id: env_acfec4727300d37e4a1b57af3db52077
+        created: 1794009600000
+        modified: 1794009600000
+        sortKey: 1
+        description: ""
+        isPrivate: false
+      data:
+        base_url: http://localhost:3001
+        remote_url: http://localhost:3000
+        remote_login_url: http://localhost:3000/v1/auth/login
+        cell_region: eu-west-3
+        remote_cell_region: af-south-1
+        lender_slug: teranga-sante
+        admin_email: admin@teranga-sante.example
+        credit_email: credit@teranga-sante.example
+        finance_email: finance@teranga-sante.example
+        remote_lender_slug: arewa-pharmafinance
+        remote_staff_email: credit@arewa-pharmafinance.example
+        country_code: SN
+        currency: XOF
+        timezone: Africa/Dakar
+        locale: fr-SN
+        cart_principal: "1000000"
+        applicant_email: demo.approve-1@teranga-sante.customers.example
+        applicant_national_id: "<from make seed: Demo applicants table, an APPROVE national id for this lender>"
+        applicant_business_name: Pharmacie du Plateau
+        applicant_registration_number: SN-DKR-1234567
+        applicant_licence_number: ONP/2024/900
+        applicant_first_name: Fatou
+        applicant_last_name: Sarr
+        applicant_phone: "+221771234600"
+        applicant_monthly_income: "6000000"
+        applicant_monthly_expenses: "2000000"

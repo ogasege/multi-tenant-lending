@@ -39,6 +39,62 @@ make seed                   # demo lenders, staff, products and borrowers in the
   `openapi/openapi.json` (`make openapi` regenerates it, `make openapi-check` fails if stale).
 - `make help` lists every target. `make down` stops the stack; `make clean` also deletes data.
 
+**API client.** A ready-made collection walks the API in order: platform, lender staff,
+pharmacy sign-up and checkout, assessment and approval, disbursement, repayment, ledger and
+audit, then the proofs (404 across lenders, 403 for the approver, 422 for a reused key, 307
+and 421 across regions, 429 on login floods). Every request has tests, and ids and tokens
+carry over from one request to the next.
+
+[![Run in Insomnia](https://insomnia.rest/images/run.svg)](https://app.insomnia.rest/run?label=Multi-tenant%20lending&uri=https%3A%2F%2Fraw.githubusercontent.com%2Fogasege%2Fmulti-tenant-lending%2Fmain%2Fapi-client%2Fmulti-tenant-lending.insomnia.yaml)
+
+<!-- run-in-postman -->
+
+| Tool       | Import                                                                                                                               |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Insomnia   | The button above (signed in to Insomnia), or **Import** → URL or file: [Insomnia collection][ac-insomnia] (both environments inside) |
+| Postman    | **Import** → paste the collection URL below, or the file: [Postman collection][ac-postman] (defaults to the Lagos cell)              |
+| Hoppscotch | **Import** → **Postman** → the downloaded [Postman collection][ac-postman] file, with scripts on; environments: same importer        |
+
+Optional environment files (Postman, Hoppscotch): [Lagos cell][ac-env-lagos],
+[Paris cell][ac-env-paris].
+
+[ac-insomnia]: https://raw.githubusercontent.com/ogasege/multi-tenant-lending/main/api-client/multi-tenant-lending.insomnia.yaml
+[ac-postman]: https://raw.githubusercontent.com/ogasege/multi-tenant-lending/main/api-client/multi-tenant-lending.postman_collection.json
+[ac-env-lagos]: https://raw.githubusercontent.com/ogasege/multi-tenant-lending/main/api-client/local-lagos.postman_environment.json
+[ac-env-paris]: https://raw.githubusercontent.com/ogasege/multi-tenant-lending/main/api-client/local-paris.postman_environment.json
+
+```text
+https://raw.githubusercontent.com/ogasege/multi-tenant-lending/main/api-client/multi-tenant-lending.postman_collection.json
+```
+
+1. Start both regions: `make demo-cells` (the 307 and 421 proofs need the second cell).
+2. Keep the seed output: it prints the passwords and the demo applicants.
+3. Import the collection (button, link or file above).
+4. Pick the **Lagos cell (localhost:3000)** environment (Postman: the collection defaults
+   already point there).
+5. Fill in `platform_admin_password` and `staff_password` (printed by `make seed`, or the
+   `SEED_*` values in `.env`), `applicant_national_id` (an APPROVE national id for
+   `arewa-pharmafinance` from the seed's Demo applicants table) and any `applicant_password`
+   (12+ characters with upper case, lower case and a digit).
+6. Run the folders top to bottom (or the whole collection with the runner).
+
+From the command line, with the same values:
+
+```bash
+set -a; source .env; set +a
+npx -y newman@6 run api-client/multi-tenant-lending.postman_collection.json \
+  --env-var "platform_admin_password=$SEED_PLATFORM_ADMIN_PASSWORD" \
+  --env-var "staff_password=$SEED_STAFF_PASSWORD" \
+  --env-var "applicant_national_id=<APPROVE national id from the seed>" \
+  --env-var "applicant_password=<the password you chose>"
+```
+
+Insomnia's CLI takes the same `--env-var` flags:
+`inso run collection "Multi-tenant lending" -w api-client/multi-tenant-lending.insomnia.yaml -e "Lagos cell (localhost:3000)"`.
+Each run registers a new lender and one more loan. Hoppscotch in the browser needs its
+browser extension or desktop agent to reach `localhost`. The files are generated from
+`src/cli/api-client/definition.ts` by `make api-client`.
+
 **Demo logins.** `make seed` prints a table of every account it created (lender, role, email,
 password). Staff emails follow `admin|credit|finance|audit@<lender-slug>.example`. Passwords come
 from the `SEED_*` variables in your `.env`, or are generated and printed when those are empty.

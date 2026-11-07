@@ -13,6 +13,7 @@ export default tseslint.config(
       'infra/**',
       'docs/**',
       '.*/**',
+      'demo/**',
       'clients/**',
       'eslint.config.mjs',
     ],

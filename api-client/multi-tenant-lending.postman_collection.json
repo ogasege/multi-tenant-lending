@@ -1,0 +1,2437 @@
+{
+  "info": {
+    "_postman_id": "06dcc046-4560-4ec7-8443-9f849a86b3e7",
+    "name": "Multi-tenant lending",
+    "description": "Reviewer walkthrough of the 10mg lending API against the local stack: one loan from lender registration to repayment, then the safety proofs. Run the folders in order. Fill in the passwords (printed by `make seed`, or the SEED_* values in .env) and the demo applicant's national id (seed output, Demo applicants table); choose any `applicant_password` (12+ characters with upper case, lower case and a digit).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "0 Health",
+      "description": "Both cells answer readiness checks (database and Redis up). No login needed.",
+      "item": [
+        {
+          "name": "Readiness of this cell",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"status is \\\"ok\\\"\", () => {",
+                  "  pm.expect(body.status).to.eql(\"ok\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": "{{base_url}}/health/ready",
+            "description": "The cell named by `base_url`."
+          }
+        },
+        {
+          "name": "Readiness of the other cell",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"status is \\\"ok\\\"\", () => {",
+                  "  pm.expect(body.status).to.eql(\"ok\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": "{{remote_url}}/health/ready",
+            "description": "The second region (`remote_url`). Only up with the two-region stack (`make demo-cells`)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "1 Platform",
+      "description": "The platform operator registers lenders. Each run registers a new lender with a random slug, homed in this cell; folder 8 uses it to show that one lender cannot see another.",
+      "item": [
+        {
+          "name": "Log in as platform admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"tokenType is \\\"Bearer\\\"\", () => {",
+                  "  pm.expect(body.tokenType).to.eql(\"Bearer\");",
+                  "});",
+                  "try {",
+                  "  setVar('platform_token', body.accessToken);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{platform_admin_email}}\",\n  \"password\": \"{{platform_admin_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/platform/auth/login",
+            "description": "Platform administrators use their own login route and token audience."
+          }
+        },
+        {
+          "name": "Register a lender",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const $uuid = () =>",
+                  "  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {",
+                  "    const r = Math.floor(Math.random() * 16);",
+                  "    return (c === 'x' ? r : (r % 4) + 8).toString(16);",
+                  "  });",
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "const suffix = Math.random().toString(36).slice(2, 8).padEnd(6, '0');",
+                  "setVar('new_lender_slug', `demo-lender-${suffix}`);",
+                  "setVar('new_lender_admin_password', `Demo-${$uuid().slice(0, 8)}-Pass1`);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 201\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(201);",
+                  "});",
+                  "pm.test(\"slug equals new_lender_slug\", () => {",
+                  "  pm.expect(body.slug).to.eql(pm.variables.get('new_lender_slug'));",
+                  "});",
+                  "pm.test(\"homeRegion equals cell_region\", () => {",
+                  "  pm.expect(body.homeRegion).to.eql(pm.variables.get('cell_region'));",
+                  "});",
+                  "pm.test(\"status is \\\"ACTIVE\\\"\", () => {",
+                  "  pm.expect(body.status).to.eql(\"ACTIVE\");",
+                  "});",
+                  "pm.test(\"firstAdmin.password is not exposed\", () => {",
+                  "  pm.expect(body.firstAdmin.password).to.not.exist;",
+                  "});",
+                  "pm.test(\"firstAdmin.passwordHash is not exposed\", () => {",
+                  "  pm.expect(body.firstAdmin.passwordHash).to.not.exist;",
+                  "});",
+                  "try {",
+                  "  setVar('new_lender_id', body.id);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{platform_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"slug\": \"{{new_lender_slug}}\",\n  \"legalName\": \"Demo Lender {{new_lender_slug}} Ltd\",\n  \"countryCode\": \"{{country_code}}\",\n  \"defaultCurrency\": \"{{currency}}\",\n  \"supportedCurrencies\": [\n    \"{{currency}}\"\n  ],\n  \"lenderType\": \"MICROFINANCE_BANK\",\n  \"homeRegion\": \"{{cell_region}}\",\n  \"timezone\": \"{{timezone}}\",\n  \"branding\": {\n    \"displayName\": \"Demo Lender {{new_lender_slug}}\",\n    \"primaryColor\": \"#0B5FFF\",\n    \"secondaryColor\": \"#111827\",\n    \"locale\": \"{{locale}}\"\n  },\n  \"firstAdmin\": {\n    \"fullName\": \"Demo Admin\",\n    \"email\": \"admin@{{new_lender_slug}}.example\",\n    \"password\": \"{{new_lender_admin_password}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/platform/institutions",
+            "description": "Creates the tenant, its branding, its chart of accounts and its first admin in one transaction. `homeRegion` must be this cell (another region answers 422 WRONG_CELL). The first admin password is generated per run and kept in `new_lender_admin_password`."
+          }
+        },
+        {
+          "name": "List lenders",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"items is a list of at most 20\", () => {",
+                  "  pm.expect(Array.isArray(body.items) && body.items.length <= 20).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{platform_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/platform/institutions?limit=20",
+            "description": "Cursor-paginated; `limit` is capped at 100."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 Lender staff",
+      "description": "A lender admin reads its white-label branding and its loan products, then prices the checkout cart. The tenant comes from the token only; no request names a tenant id.",
+      "item": [
+        {
+          "name": "Log in as lender admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"tokenType is \\\"Bearer\\\"\", () => {",
+                  "  pm.expect(body.tokenType).to.eql(\"Bearer\");",
+                  "});",
+                  "pm.test(\"accessToken is present\", () => {",
+                  "  pm.expect(body.accessToken).to.exist;",
+                  "});",
+                  "try {",
+                  "  setVar('admin_token', body.accessToken);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"institutionSlug\": \"{{lender_slug}}\",\n  \"email\": \"{{admin_email}}\",\n  \"password\": \"{{staff_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/auth/login",
+            "description": "Staff log in with the lender slug, their email and password. Tokens last 15 minutes: if a later request answers 401, send its folder login again."
+          }
+        },
+        {
+          "name": "Who am I",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"role is \\\"INSTITUTION_ADMIN\\\"\", () => {",
+                  "  pm.expect(body.role).to.eql(\"INSTITUTION_ADMIN\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/me",
+            "description": "Role and tenant are read from the signed token."
+          }
+        },
+        {
+          "name": "Read branding (admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"displayName is present\", () => {",
+                  "  pm.expect(body.displayName).to.exist;",
+                  "});",
+                  "pm.test(\"version is present\", () => {",
+                  "  pm.expect(body.version).to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/institution/branding",
+            "description": "Name, colours, contacts, locale and the optimistic-concurrency `version`."
+          }
+        },
+        {
+          "name": "Read branding (public)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"slug equals lender_slug\", () => {",
+                  "  pm.expect(body.slug).to.eql(pm.variables.get('lender_slug'));",
+                  "});",
+                  "pm.test(\"primaryColor is present\", () => {",
+                  "  pm.expect(body.primaryColor).to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": "{{base_url}}/v1/institutions/{{lender_slug}}/branding",
+            "description": "What a white-label front-end loads before anyone logs in."
+          }
+        },
+        {
+          "name": "List loan products",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"the checkout product (product_code) exists\", () => {",
+                  "  pm.expect(body.items.some((p) => p.code === pm.variables.get('product_code'))).to.eql(true);",
+                  "});",
+                  "try {",
+                  "  if (body.items && body.items.some((p) => p.code === pm.variables.get('product_code'))) setVar('product_id', body.items.find((p) => p.code === pm.variables.get('product_code')).id);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/loan-products?limit=100",
+            "description": "Stores the id of the checkout product (`product_code`) as `product_id`."
+          }
+        },
+        {
+          "name": "Quote the cart",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"currency equals currency\", () => {",
+                  "  pm.expect(body.currency).to.eql(pm.variables.get('currency'));",
+                  "});",
+                  "pm.test(\"aprWithinCap is true\", () => {",
+                  "  pm.expect(body.aprWithinCap).to.eql(true);",
+                  "});",
+                  "pm.test(\"totalRepayable is present\", () => {",
+                  "  pm.expect(body.totalRepayable).to.exist;",
+                  "});",
+                  "pm.test(\"aprBps is present\", () => {",
+                  "  pm.expect(body.aprBps).to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"principal\": \"{{cart_principal}}\",\n  \"term\": 30\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/loan-products/{{product_id}}/quote",
+            "description": "Cost of credit before anyone commits: financed principal (cart plus fee), total repayable, total cost of credit and the APR, checked against the platform APR cap."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 Pharmacy",
+      "description": "A pharmacy signs up with a demo applicant (known APPROVE decision) and finances its cart at checkout. Each national id signs up once per lender: on a second run the sign-up answers 409 and the login that follows still works.",
+      "item": [
+        {
+          "name": "Sign up (demo applicant)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is one of 201, 409\", () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([201,409]);",
+                  "});",
+                  "pm.test(\"national id is not returned\", () => {",
+                  "  pm.expect(JSON.stringify(body).includes(String(pm.variables.get('applicant_national_id')))).to.eql(false);",
+                  "});",
+                  "try {",
+                  "  if (pm.response.code === 201) setVar('customer_token', body.tokens.accessToken);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerType\": \"BUSINESS\",\n  \"businessName\": \"{{applicant_business_name}}\",\n  \"businessRegistrationNumber\": \"{{applicant_registration_number}}\",\n  \"operatingLicenceNumber\": \"{{applicant_licence_number}}\",\n  \"firstName\": \"{{applicant_first_name}}\",\n  \"lastName\": \"{{applicant_last_name}}\",\n  \"email\": \"{{applicant_email}}\",\n  \"phone\": \"{{applicant_phone}}\",\n  \"dateOfBirth\": \"1984-06-15\",\n  \"nationalId\": \"{{applicant_national_id}}\",\n  \"employmentStatus\": \"BUSINESS_OWNER\",\n  \"monthsInEmployment\": 60,\n  \"currency\": \"{{currency}}\",\n  \"monthlyIncome\": \"{{applicant_monthly_income}}\",\n  \"monthlyExpenses\": \"{{applicant_monthly_expenses}}\",\n  \"existingMonthlyDebt\": \"0\",\n  \"password\": \"{{applicant_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/institutions/{{lender_slug}}/customers/register",
+            "description": "Self-registration for this lender. The national id is stored only as a keyed HMAC plus its last 4 digits, and never returned. 409 means this applicant already signed up (the next request logs in instead). At most 30 sign-ups per lender per hour."
+          }
+        },
+        {
+          "name": "Log in as pharmacy",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"tokenType is \\\"Bearer\\\"\", () => {",
+                  "  pm.expect(body.tokenType).to.eql(\"Bearer\");",
+                  "});",
+                  "pm.test(\"accessToken is present\", () => {",
+                  "  pm.expect(body.accessToken).to.exist;",
+                  "});",
+                  "try {",
+                  "  setVar('customer_token', body.accessToken);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"institutionSlug\": \"{{lender_slug}}\",\n  \"email\": \"{{applicant_email}}\",\n  \"password\": \"{{applicant_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/auth/login",
+            "description": "Borrowers use the same login route as staff; the token carries the CUSTOMER role."
+          }
+        },
+        {
+          "name": "My customer profile",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"email equals applicant_email\", () => {",
+                  "  pm.expect(body.email).to.eql(pm.variables.get('applicant_email'));",
+                  "});",
+                  "pm.test(\"nationalId is not exposed\", () => {",
+                  "  pm.expect(body.nationalId).to.not.exist;",
+                  "});",
+                  "pm.test(\"nationalIdHmac is not exposed\", () => {",
+                  "  pm.expect(body.nationalIdHmac).to.not.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customer_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/customers/me",
+            "description": "A customer only ever sees its own record."
+          }
+        },
+        {
+          "name": "Apply at checkout",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const $uuid = () =>",
+                  "  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {",
+                  "    const r = Math.floor(Math.random() * 16);",
+                  "    return (c === 'x' ? r : (r % 4) + 8).toString(16);",
+                  "  });",
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "setVar('application_key', $uuid());",
+                  "setVar('order_reference', `ORD-${Date.now()}`);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 201\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(201);",
+                  "});",
+                  "pm.test(\"status is \\\"SUBMITTED\\\"\", () => {",
+                  "  pm.expect(body.status).to.eql(\"SUBMITTED\");",
+                  "});",
+                  "pm.test(\"productId equals product_id\", () => {",
+                  "  pm.expect(body.productId).to.eql(pm.variables.get('product_id'));",
+                  "});",
+                  "try {",
+                  "  setVar('application_id', body.id);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{application_key}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customer_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"{{product_id}}\",\n  \"principal\": \"{{cart_principal}}\",\n  \"term\": 30,\n  \"externalOrderReference\": \"{{order_reference}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/loan-applications",
+            "description": "Finances the cart: the supplier is paid directly at disbursement. A fresh `Idempotency-Key` and checkout order reference are generated per run."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 Credit officer",
+      "description": "The credit officer runs the explainable scorecard, then approves.",
+      "item": [
+        {
+          "name": "Log in as credit officer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"tokenType is \\\"Bearer\\\"\", () => {",
+                  "  pm.expect(body.tokenType).to.eql(\"Bearer\");",
+                  "});",
+                  "pm.test(\"accessToken is present\", () => {",
+                  "  pm.expect(body.accessToken).to.exist;",
+                  "});",
+                  "try {",
+                  "  setVar('credit_token', body.accessToken);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"institutionSlug\": \"{{lender_slug}}\",\n  \"email\": \"{{credit_email}}\",\n  \"password\": \"{{staff_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/auth/login",
+            "description": "Credit officers assess, approve and reject; they cannot disburse."
+          }
+        },
+        {
+          "name": "Assess the application",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"decision is \\\"APPROVE\\\"\", () => {",
+                  "  pm.expect(body.decision).to.eql(\"APPROVE\");",
+                  "});",
+                  "pm.test(\"grade is present\", () => {",
+                  "  pm.expect(body.grade).to.exist;",
+                  "});",
+                  "pm.test(\"bureauScore is present\", () => {",
+                  "  pm.expect(body.bureauScore).to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{credit_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/loan-applications/{{application_id}}/assess",
+            "description": "Mock bureau plus scorecard: decision, grade, bureau score, debt-to-income and reason codes. The demo applicant is approved as requested."
+          }
+        },
+        {
+          "name": "Approve",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const $uuid = () =>",
+                  "  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {",
+                  "    const r = Math.floor(Math.random() * 16);",
+                  "    return (c === 'x' ? r : (r % 4) + 8).toString(16);",
+                  "  });",
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "setVar('approval_key', $uuid());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 201\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(201);",
+                  "});",
+                  "pm.test(\"application.status is \\\"APPROVED\\\"\", () => {",
+                  "  pm.expect(body.application.status).to.eql(\"APPROVED\");",
+                  "});",
+                  "pm.test(\"loan.status is \\\"PENDING_DISBURSEMENT\\\"\", () => {",
+                  "  pm.expect(body.loan.status).to.eql(\"PENDING_DISBURSEMENT\");",
+                  "});",
+                  "try {",
+                  "  setVar('loan_id', body.loan.id);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{approval_key}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{credit_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/loan-applications/{{application_id}}/approve",
+            "description": "Creates the loan in PENDING_DISBURSEMENT; stores its id as `loan_id`."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5 Finance",
+      "description": "The finance officer releases the money to the supplier. The disbursement is sent twice with one `Idempotency-Key`, as a client would after a timeout: the second answer is the stored one (`Idempotent-Replayed: true`) and the supplier is paid once.",
+      "item": [
+        {
+          "name": "Log in as finance officer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"tokenType is \\\"Bearer\\\"\", () => {",
+                  "  pm.expect(body.tokenType).to.eql(\"Bearer\");",
+                  "});",
+                  "pm.test(\"accessToken is present\", () => {",
+                  "  pm.expect(body.accessToken).to.exist;",
+                  "});",
+                  "try {",
+                  "  setVar('finance_token', body.accessToken);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"institutionSlug\": \"{{lender_slug}}\",\n  \"email\": \"{{finance_email}}\",\n  \"password\": \"{{staff_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/auth/login",
+            "description": "Finance officers disburse, record repayments and read the ledger and audit log."
+          }
+        },
+        {
+          "name": "Disburse",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const $uuid = () =>",
+                  "  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {",
+                  "    const r = Math.floor(Math.random() * 16);",
+                  "    return (c === 'x' ? r : (r % 4) + 8).toString(16);",
+                  "  });",
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "setVar('disbursement_key', $uuid());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"status is \\\"ACTIVE\\\"\", () => {",
+                  "  pm.expect(body.status).to.eql(\"ACTIVE\");",
+                  "});",
+                  "pm.test(\"providerReference is present\", () => {",
+                  "  pm.expect(body.providerReference).to.exist;",
+                  "});",
+                  "pm.test(\"not a replay\", () => {",
+                  "  pm.expect(pm.response.headers.get('Idempotent-Replayed')).to.not.exist;",
+                  "});",
+                  "try {",
+                  "  setVar('provider_reference', body.providerReference);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{disbursement_key}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{finance_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/loans/{{loan_id}}/disburse",
+            "description": "Generates a new `disbursement_key` and pays the supplier (mock provider)."
+          }
+        },
+        {
+          "name": "Disburse again (resend same key)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"Idempotent-Replayed is true\", () => {",
+                  "  pm.expect(pm.response.headers.get('Idempotent-Replayed')).to.eql(\"true\");",
+                  "});",
+                  "pm.test(\"providerReference equals provider_reference\", () => {",
+                  "  pm.expect(body.providerReference).to.eql(pm.variables.get('provider_reference'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{disbursement_key}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{finance_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/loans/{{loan_id}}/disburse",
+            "description": "Same request, same `disbursement_key`: the stored response comes back."
+          }
+        }
+      ]
+    },
+    {
+      "name": "6 Repayment",
+      "description": "The pharmacy pays off the loan. The repayment is also sent twice with one key; folder 8 reuses that key for a different amount.",
+      "item": [
+        {
+          "name": "Payoff quote",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"loanId equals loan_id\", () => {",
+                  "  pm.expect(body.loanId).to.eql(pm.variables.get('loan_id'));",
+                  "});",
+                  "pm.test(\"total is present\", () => {",
+                  "  pm.expect(body.total).to.exist;",
+                  "});",
+                  "try {",
+                  "  setVar('payoff_total', body.total);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{finance_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/loans/{{loan_id}}/payoff-quote",
+            "description": "What clears the loan today; stores `payoff_total`."
+          }
+        },
+        {
+          "name": "Record repayment",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const $uuid = () =>",
+                  "  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {",
+                  "    const r = Math.floor(Math.random() * 16);",
+                  "    return (c === 'x' ? r : (r % 4) + 8).toString(16);",
+                  "  });",
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "setVar('repayment_key', $uuid());",
+                  "setVar('bank_reference', `NIP-${Date.now()}`);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 201\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(201);",
+                  "});",
+                  "pm.test(\"amount equals payoff_total\", () => {",
+                  "  pm.expect(body.amount).to.eql(pm.variables.get('payoff_total'));",
+                  "});",
+                  "pm.test(\"loanStatus is \\\"CLOSED\\\"\", () => {",
+                  "  pm.expect(body.loanStatus).to.eql(\"CLOSED\");",
+                  "});",
+                  "try {",
+                  "  setVar('repayment_id', body.id);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{repayment_key}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{finance_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"{{payoff_total}}\",\n  \"channel\": \"BANK_TRANSFER\",\n  \"externalReference\": \"{{bank_reference}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/loans/{{loan_id}}/repayments",
+            "description": "Bank transfer of the payoff amount. Every channel except cash needs a bank reference that is new for the lender; one is generated per run."
+          }
+        },
+        {
+          "name": "Record repayment again (resend same key)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 201\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(201);",
+                  "});",
+                  "pm.test(\"Idempotent-Replayed is true\", () => {",
+                  "  pm.expect(pm.response.headers.get('Idempotent-Replayed')).to.eql(\"true\");",
+                  "});",
+                  "pm.test(\"id equals repayment_id\", () => {",
+                  "  pm.expect(body.id).to.eql(pm.variables.get('repayment_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{repayment_key}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{finance_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"{{payoff_total}}\",\n  \"channel\": \"BANK_TRANSFER\",\n  \"externalReference\": \"{{bank_reference}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/loans/{{loan_id}}/repayments",
+            "description": "Replayed: one repayment is recorded, not two."
+          }
+        },
+        {
+          "name": "Read the loan",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"status is \\\"CLOSED\\\"\", () => {",
+                  "  pm.expect(body.status).to.eql(\"CLOSED\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{finance_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/loans/{{loan_id}}",
+            "description": "Fully repaid."
+          }
+        }
+      ]
+    },
+    {
+      "name": "7 Ledger and audit",
+      "description": "The double-entry books balance and the hash-chained audit log verifies.",
+      "item": [
+        {
+          "name": "Trial balance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"balanced is true\", () => {",
+                  "  pm.expect(body.balanced).to.eql(true);",
+                  "});",
+                  "pm.test(\"debits equal credits\", () => {",
+                  "  pm.expect(body.totalDebits === body.totalCredits).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{finance_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/ledger/trial-balance?currency={{currency}}",
+            "description": "Sum of debits equals sum of credits for the currency."
+          }
+        },
+        {
+          "name": "Verify the audit chain",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"valid is true\", () => {",
+                  "  pm.expect(body.valid).to.eql(true);",
+                  "});",
+                  "pm.test(\"entriesChecked is present\", () => {",
+                  "  pm.expect(body.entriesChecked).to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{finance_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/audit-logs/verify",
+            "description": "Recomputes every entry hash of this lender’s audit log."
+          }
+        }
+      ]
+    },
+    {
+      "name": "8 Proofs",
+      "description": "The same rules from the outside: another lender gets 404, the approver gets 403, a reused key with another body gets 422, a login in the wrong region gets 307, a token from another region gets 421, a login flood gets 429. Run folders 1 to 6 first.",
+      "item": [
+        {
+          "name": "Log in as admin of the lender from folder 1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"tokenType is \\\"Bearer\\\"\", () => {",
+                  "  pm.expect(body.tokenType).to.eql(\"Bearer\");",
+                  "});",
+                  "pm.test(\"accessToken is present\", () => {",
+                  "  pm.expect(body.accessToken).to.exist;",
+                  "});",
+                  "try {",
+                  "  setVar('new_lender_admin_token', body.accessToken);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"institutionSlug\": \"{{new_lender_slug}}\",\n  \"email\": \"admin@{{new_lender_slug}}.example\",\n  \"password\": \"{{new_lender_admin_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/auth/login",
+            "description": "A different tenant on the same cell."
+          }
+        },
+        {
+          "name": "Another lender reads our loan: 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 404\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(404);",
+                  "});",
+                  "pm.test(\"code is \\\"NOT_FOUND\\\"\", () => {",
+                  "  pm.expect(body.code).to.eql(\"NOT_FOUND\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{new_lender_admin_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/loans/{{loan_id}}",
+            "description": "Row-level security hides the loan; the answer is the same as for an id that does not exist, so nothing reveals that it is there."
+          }
+        },
+        {
+          "name": "Approver disburses: 403",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const $uuid = () =>",
+                  "  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {",
+                  "    const r = Math.floor(Math.random() * 16);",
+                  "    return (c === 'x' ? r : (r % 4) + 8).toString(16);",
+                  "  });",
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "setVar('sod_key', $uuid());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 403\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(403);",
+                  "});",
+                  "pm.test(\"code is \\\"FORBIDDEN\\\"\", () => {",
+                  "  pm.expect(body.code).to.eql(\"FORBIDDEN\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{sod_key}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{credit_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/loans/{{loan_id}}/disburse",
+            "description": "Segregation of duties: the role that approves can never release money."
+          }
+        },
+        {
+          "name": "Reuse a key for another amount: 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 422\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(422);",
+                  "});",
+                  "pm.test(\"code is \\\"IDEMPOTENCY_KEY_REUSED\\\"\", () => {",
+                  "  pm.expect(body.code).to.eql(\"IDEMPOTENCY_KEY_REUSED\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{repayment_key}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{finance_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"100\",\n  \"channel\": \"BANK_TRANSFER\",\n  \"externalReference\": \"{{bank_reference}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/loans/{{loan_id}}/repayments",
+            "description": "The repayment key from folder 6 with a different body is refused."
+          }
+        },
+        {
+          "name": "Log in to a lender of the other region: 307",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 307\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(307);",
+                  "});",
+                  "pm.test(\"Location is the other cell\", () => {",
+                  "  pm.expect(pm.response.headers.get('Location')).to.eql(pm.variables.get('remote_login_url'));",
+                  "});",
+                  "pm.test(\"X-Tenant-Cell names the other region\", () => {",
+                  "  pm.expect(pm.response.headers.get('X-Tenant-Cell')).to.eql(pm.variables.get('remote_cell_region'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"institutionSlug\": \"{{remote_lender_slug}}\",\n  \"email\": \"{{remote_staff_email}}\",\n  \"password\": \"{{staff_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/auth/login",
+            "description": "The lender lives in the other cell: the login is redirected there with method and body kept. Redirects are not followed here so the 307 stays visible. Needs the two-region stack."
+          }
+        },
+        {
+          "name": "Log in as staff of the other region (at its home cell)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 200\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "});",
+                  "pm.test(\"tokenType is \\\"Bearer\\\"\", () => {",
+                  "  pm.expect(body.tokenType).to.eql(\"Bearer\");",
+                  "});",
+                  "pm.test(\"accessToken is present\", () => {",
+                  "  pm.expect(body.accessToken).to.exist;",
+                  "});",
+                  "try {",
+                  "  setVar('remote_token', body.accessToken);",
+                  "} catch (e) {",
+                  "  // not in this response",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"institutionSlug\": \"{{remote_lender_slug}}\",\n  \"email\": \"{{remote_staff_email}}\",\n  \"password\": \"{{staff_password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{remote_url}}/v1/auth/login",
+            "description": "The same login sent where the redirect pointed."
+          }
+        },
+        {
+          "name": "Use that token in this region: 421",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 421\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(421);",
+                  "});",
+                  "pm.test(\"apiBaseUrl equals remote_url\", () => {",
+                  "  pm.expect(body.apiBaseUrl).to.eql(pm.variables.get('remote_url'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{remote_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{base_url}}/v1/loans",
+            "description": "Tokens carry their cell; the problem body names the right API base URL."
+          }
+        },
+        {
+          "name": "Flood the login: 429",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Environment first; collection variables keep values when no environment is",
+                  "// selected (Hoppscotch has none, hence the try).",
+                  "const setVar = (name, value) => {",
+                  "  pm.environment.set(name, value);",
+                  "  try {",
+                  "    pm.collectionVariables.set(name, value);",
+                  "  } catch (e) {",
+                  "    // not supported here",
+                  "  }",
+                  "};",
+                  "setVar('rate_limit_client_ip', `198.51.100.${1 + Math.floor(Math.random() * 254)}`);",
+                  "// Spend this client's login budget: 20 failed logins before the request.",
+                  "const sendSome = (left) => {",
+                  "  if (left === 0) return;",
+                  "  pm.sendRequest(",
+                  "    {",
+                  "      url: `${pm.variables.get('base_url')}/v1/auth/login`,",
+                  "      method: 'POST',",
+                  "      header: [",
+                  "        { key: 'Content-Type', value: 'application/json' },",
+                  "        { key: 'X-Forwarded-For', value: pm.variables.get('rate_limit_client_ip') },",
+                  "      ],",
+                  "      body: { mode: 'raw', raw: JSON.stringify({ institutionSlug: pm.variables.get('lender_slug'), email: 'nobody@example.invalid', password: 'not-a-real-password-1A' }) },",
+                  "    },",
+                  "    () => sendSome(left - 1),",
+                  "  );",
+                  "};",
+                  "sendSome(20);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 429\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(429);",
+                  "});",
+                  "pm.test(\"code is \\\"RATE_LIMITED\\\"\", () => {",
+                  "  pm.expect(body.code).to.eql(\"RATE_LIMITED\");",
+                  "});",
+                  "pm.test(\"Retry-After is set\", () => {",
+                  "  pm.expect(pm.response.headers.get('Retry-After')).to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{rate_limit_client_ip}}",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"institutionSlug\": \"{{lender_slug}}\",\n  \"email\": \"nobody@example.invalid\",\n  \"password\": \"not-a-real-password-1A\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/auth/login",
+            "description": "Credential routes allow 20 attempts per minute per client. The pre-request script first sends 20 failed logins for an account that does not exist, so this request is over the limit (to repeat by hand instead, send it 21 times within a minute). Locally the API trusts one proxy hop, so the burst uses a random documentation address (198.51.100.0/24) in `X-Forwarded-For`: it spends that address’s budget, not yours. Behind the AWS load balancer the real client address is used instead."
+          }
+        },
+        {
+          "name": "Create a webhook endpoint",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json() ?? {};",
+                  "} catch (e) {",
+                  "  // no JSON body",
+                  "}",
+                  "pm.test(\"status is 201\", () => {",
+                  "  pm.expect(pm.response.code).to.eql(201);",
+                  "});",
+                  "pm.test(\"status is \\\"ACTIVE\\\"\", () => {",
+                  "  pm.expect(body.status).to.eql(\"ACTIVE\");",
+                  "});",
+                  "pm.test(\"secret is present\", () => {",
+                  "  pm.expect(body.secret).to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{new_lender_admin_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"{{webhook_url}}\",\n  \"eventTypes\": [\n    \"loan.disbursed\",\n    \"repayment.received\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/v1/webhook-endpoints",
+            "description": "On the lender from folder 1. HTTPS only, public addresses only (SSRF guard). The signing secret is returned once, here."
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "platform_admin_email",
+      "value": "ops@platform.example",
+      "type": "string"
+    },
+    {
+      "key": "platform_admin_password",
+      "value": "<from make seed: SEED_PLATFORM_ADMIN_PASSWORD>",
+      "type": "string"
+    },
+    {
+      "key": "staff_password",
+      "value": "<from make seed: SEED_STAFF_PASSWORD>",
+      "type": "string"
+    },
+    {
+      "key": "applicant_password",
+      "value": "<choose one: 12+ characters, upper and lower case, a digit>",
+      "type": "string"
+    },
+    {
+      "key": "product_code",
+      "value": "SUPPLIER_30",
+      "type": "string"
+    },
+    {
+      "key": "webhook_url",
+      "value": "https://example.com/hooks/10mg",
+      "type": "string"
+    },
+    {
+      "key": "base_url",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "remote_url",
+      "value": "http://localhost:3001",
+      "type": "string"
+    },
+    {
+      "key": "remote_login_url",
+      "value": "http://localhost:3001/v1/auth/login",
+      "type": "string"
+    },
+    {
+      "key": "cell_region",
+      "value": "af-south-1",
+      "type": "string"
+    },
+    {
+      "key": "remote_cell_region",
+      "value": "eu-west-3",
+      "type": "string"
+    },
+    {
+      "key": "lender_slug",
+      "value": "arewa-pharmafinance",
+      "type": "string"
+    },
+    {
+      "key": "admin_email",
+      "value": "admin@arewa-pharmafinance.example",
+      "type": "string"
+    },
+    {
+      "key": "credit_email",
+      "value": "credit@arewa-pharmafinance.example",
+      "type": "string"
+    },
+    {
+      "key": "finance_email",
+      "value": "finance@arewa-pharmafinance.example",
+      "type": "string"
+    },
+    {
+      "key": "remote_lender_slug",
+      "value": "teranga-sante",
+      "type": "string"
+    },
+    {
+      "key": "remote_staff_email",
+      "value": "credit@teranga-sante.example",
+      "type": "string"
+    },
+    {
+      "key": "country_code",
+      "value": "NG",
+      "type": "string"
+    },
+    {
+      "key": "currency",
+      "value": "NGN",
+      "type": "string"
+    },
+    {
+      "key": "timezone",
+      "value": "Africa/Lagos",
+      "type": "string"
+    },
+    {
+      "key": "locale",
+      "value": "en-NG",
+      "type": "string"
+    },
+    {
+      "key": "cart_principal",
+      "value": "50000000",
+      "type": "string"
+    },
+    {
+      "key": "applicant_email",
+      "value": "demo.approve-1@arewa-pharmafinance.customers.example",
+      "type": "string"
+    },
+    {
+      "key": "applicant_national_id",
+      "value": "<from make seed: Demo applicants table, an APPROVE national id for this lender>",
+      "type": "string"
+    },
+    {
+      "key": "applicant_business_name",
+      "value": "GoodHealth Pharmacy Ltd",
+      "type": "string"
+    },
+    {
+      "key": "applicant_registration_number",
+      "value": "RC1234567",
+      "type": "string"
+    },
+    {
+      "key": "applicant_licence_number",
+      "value": "PCN/PREM/2024/900",
+      "type": "string"
+    },
+    {
+      "key": "applicant_first_name",
+      "value": "Ngozi",
+      "type": "string"
+    },
+    {
+      "key": "applicant_last_name",
+      "value": "Adebayo",
+      "type": "string"
+    },
+    {
+      "key": "applicant_phone",
+      "value": "+234801234600",
+      "type": "string"
+    },
+    {
+      "key": "applicant_monthly_income",
+      "value": "300000000",
+      "type": "string"
+    },
+    {
+      "key": "applicant_monthly_expenses",
+      "value": "100000000",
+      "type": "string"
+    }
+  ]
+}

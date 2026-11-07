@@ -218,6 +218,14 @@ openapi: ## Export the OpenAPI document (openapi/openapi.json)
 openapi-check: ## Fail if the committed OpenAPI document is out of date
 	npm run openapi:check
 
+.PHONY: api-client
+api-client: ## Export the API-client collections (api-client/: Insomnia, Postman)
+	npm run api-client:export
+
+.PHONY: api-client-check
+api-client-check: ## Fail if the committed API-client collections are out of date
+	npm run api-client:check
+
 .PHONY: hadolint
 hadolint: ## Lint the Dockerfile with hadolint (via Docker)
 	docker run --rm -i hadolint/hadolint:v2.14.0@sha256:27086352fd5e1907ea2b934eb1023f217c5ae087992eb59fde121dce9c9ff21e < Dockerfile
