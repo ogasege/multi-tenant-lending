@@ -479,28 +479,6 @@ missing.
 One container image runs as two processes, the **API** and the **worker**. A one-off Flyway
 task applies migrations before they roll out.
 
-<details>
-<summary>Text version (Mermaid)</summary>
-
-```mermaid
-flowchart LR
-  WEB["White-label web and partner apps"] --> WAF["AWS WAF"]
-  WAF --> ALB["ALB, HTTPS"]
-  ALB --> API["API task<br/>NestJS, role lending_app"]
-  API --> PG[("RDS PostgreSQL 16<br/>RLS per lender")]
-  API --> RD[("ElastiCache Valkey<br/>rate limits, cache")]
-  API --> S3[("S3<br/>brand logos")]
-  API --> DDB[("DynamoDB<br/>tenant directory")]
-  WK["Worker task<br/>role lending_worker"] --> PG
-  WK --> RD
-  WK --> SQS[["SQS domain-events + DLQ"]]
-  SQS --> WK
-  WK --> DDB
-  WK -->|"signed webhooks"| LND["Lender systems"]
-```
-
-</details>
-
 ### Regions and routing
 
 ![Regions: how a request finds the lender's home region](assets/diagrams/02-regions.png)
@@ -508,29 +486,6 @@ flowchart LR
 A **cell** is one full copy of the system in one AWS region. Each lender has a fixed
 `home_region` and lives in exactly one cell. The only global piece is the tenant directory
 (slug → home cell), which holds routing data only.
-
-<details>
-<summary>Text version (Mermaid)</summary>
-
-```mermaid
-flowchart TB
-  C["Client"] --> R53["Route 53 api.domain<br/>geolocation"]
-  R53 --> AF
-  R53 --> EU
-  subgraph AF["Cell af-south-1, Cape Town"]
-    AFAPI["API + worker"] --> AFDB[("PostgreSQL<br/>Eko MediCredit, Arewa PharmaFinance, Delta CareLend")]
-  end
-  subgraph EU["Cell eu-west-3, Paris"]
-    EUAPI["API + worker"] --> EUDB[("PostgreSQL<br/>Teranga Santé")]
-  end
-  DIR[("DynamoDB global table<br/>slug to home cell")]
-  AFAPI -.->|"read / project"| DIR
-  EUAPI -.->|"read / project"| DIR
-  EUAPI -->|"slug homed elsewhere: 307 to home cell"| C
-  EUAPI -->|"token from another cell: 421"| C
-```
-
-</details>
 
 - **307 Temporary Redirect** on slug-addressed public routes (login, sign-up, public branding)
   when the slug lives in another cell. Method and body are kept. Unknown slugs get the normal local answer, so
@@ -551,44 +506,6 @@ flowchart TB
 Example: `POST /v1/loans/{id}/disburse`. Every write in the request commits together or not at
 all.
 
-<details>
-<summary>Text version (Mermaid)</summary>
-
-```mermaid
-sequenceDiagram
-  autonumber
-  participant C as Client
-  participant G as AuthGuard
-  participant L as RateLimitGuard
-  participant I as Idempotency interceptor
-  participant U as Use case
-  participant DB as PostgreSQL
-  participant W as Worker
-  participant Q as SQS
-  participant T as Lender webhook endpoint
-  C->>G: POST with Bearer token and Idempotency-Key
-  G->>G: verify JWT, cell claim, permission loan:disburse
-  G->>L: principal and tenant known
-  L->>L: charge principal and tenant budgets
-  L->>I: allowed
-  I->>DB: BEGIN, set app.tenant_id, reserve key
-  I->>U: run handler in the same transaction
-  U->>DB: lock loan, update rows
-  U->>DB: journal entry and postings
-  U->>DB: audit row, hash-chained
-  U->>DB: outbox event
-  I->>DB: store response, COMMIT
-  Note over DB: deferred trigger checks debits equal credits
-  I-->>C: 200 response
-  W->>DB: claim outbox rows, SKIP LOCKED
-  W->>Q: send event
-  Q->>W: receive event
-  W->>T: POST signed with Standard Webhooks
-  W->>DB: record delivery attempt
-```
-
-</details>
-
 A retry with the same key and body replays the stored response with
 `Idempotent-Replayed: true`. The same key with a different body gets
 `422 IDEMPOTENCY_KEY_REUSED`. A concurrent duplicate waits on the key's unique index, then
@@ -598,47 +515,10 @@ replays.
 
 ![A loan from checkout to repayment](assets/diagrams/06-loan-lifecycle.png)
 
-Application states:
-
-<details>
-<summary>Text version (Mermaid)</summary>
-
-```mermaid
-stateDiagram-v2
-  [*] --> SUBMITTED
-  SUBMITTED --> ASSESSED: assess
-  ASSESSED --> ASSESSED: re-assess
-  ASSESSED --> APPROVED: approve
-  SUBMITTED --> REJECTED: reject
-  ASSESSED --> REJECTED: reject
-  SUBMITTED --> WITHDRAWN: withdraw
-  ASSESSED --> WITHDRAWN: withdraw
-  APPROVED --> EXPIRED: not disbursed in time
-  REJECTED --> [*]
-  WITHDRAWN --> [*]
-  EXPIRED --> [*]
-```
-
-</details>
-
-Approval creates a loan in `PENDING_DISBURSEMENT`. Loan states:
-
-<details>
-<summary>Text version (Mermaid)</summary>
-
-```mermaid
-stateDiagram-v2
-  [*] --> PENDING_DISBURSEMENT
-  PENDING_DISBURSEMENT --> ACTIVE: disburse
-  PENDING_DISBURSEMENT --> CANCELLED: approval expired
-  ACTIVE --> CLOSED: paid in full
-  ACTIVE --> WRITTEN_OFF: write off
-  CLOSED --> [*]
-  CANCELLED --> [*]
-  WRITTEN_OFF --> [*]
-```
-
-</details>
+- **Application:** `SUBMITTED` → `ASSESSED` → `APPROVED`, or `REJECTED` / `WITHDRAWN`. An
+  approval that is not disbursed in time becomes `EXPIRED`.
+- **Loan:** approval creates it in `PENDING_DISBURSEMENT`, then `ACTIVE` on disbursement and
+  `CLOSED` when paid in full. It is `CANCELLED` if the approval expires first, or `WRITTEN_OFF`.
 
 Being late is not a state. Days past due and a bucket (`CURRENT`, `DPD_1_30` … `DPD_90_PLUS`)
 are derived and refreshed by end of day. An illegal move returns
@@ -692,57 +572,6 @@ clients/white-label-web/        branded borrower app and back office
 
 Main tables (all in `db/migrations/V1__core_schema.sql`, plus V2–V5). Every table except the
 platform-admin tables carries `tenant_id`.
-
-<details>
-<summary>Text version (Mermaid)</summary>
-
-```mermaid
-erDiagram
-  institutions ||--|| institution_branding : "brands"
-  institutions ||--o{ users : "employs"
-  users ||--o{ refresh_tokens : "holds"
-  users ||--o| customers : "is"
-  institutions ||--o{ loan_products : "offers"
-  loan_products ||--o{ loan_product_versions : "versions"
-  customers ||--o{ loan_applications : "applies"
-  loan_product_versions ||--o{ loan_applications : "terms"
-  loan_applications ||--o{ credit_assessments : "assessed by"
-  loan_applications ||--o| loans : "becomes"
-  loans ||--o{ loan_instalments : "schedule"
-  loans ||--o{ repayments : "repaid by"
-  loans ||--o{ journal_entries : "posts"
-  journal_entries ||--o{ postings : "lines"
-  ledger_accounts ||--o{ postings : "account"
-  repayments }o--|| journal_entries : "posted as"
-  institutions ||--o{ audit_log : "chain"
-  institutions ||--o{ outbox_events : "emits"
-  institutions ||--o{ webhook_endpoints : "configures"
-  webhook_endpoints ||--o{ webhook_deliveries : "attempts"
-  institutions ||--o{ idempotency_keys : "scopes"
-  institutions {
-    uuid id PK
-    text slug UK
-    text home_region
-    text lender_type
-    int max_apr_bps
-  }
-  loans {
-    uuid id PK
-    uuid tenant_id
-    bigint financed_principal
-    bigint net_disbursed
-    jsonb terms
-    text status
-  }
-  postings {
-    uuid journal_entry_id FK
-    uuid account_id FK
-    text direction
-    bigint amount
-  }
-```
-
-</details>
 
 **Isolation and integrity rules, enforced by PostgreSQL:**
 
