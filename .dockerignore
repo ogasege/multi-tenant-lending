@@ -1,13 +1,9 @@
 # Keep the build context small and free of secrets and local state.
 # Allow-list thinking: anything not needed to build or test the app stays out.
 
-# VCS, tooling and editor state
-.git
-.github
-.claude
-.remember
-.vscode
-.idea
+# VCS, tooling and editor state: every dot-file and dot-folder at the context root
+# (none is needed to build or test the app)
+.*
 **/.DS_Store
 
 # Dependencies and build output are produced inside the image
@@ -35,8 +31,8 @@ compose*.yml
 Makefile
 Dockerfile
 .dockerignore
-objectives.png
-rules.png
+# Local reference images at the build-context root
+/*.png
 *.log
 .localstack
 volume

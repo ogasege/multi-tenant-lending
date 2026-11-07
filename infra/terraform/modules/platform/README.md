@@ -6,11 +6,11 @@ README. `environments/{dev,staging,prod}` are thin roots that call it with envir
 It wires the SPEC §12 runtime contract (plain env vars, plus secrets by JSON key) and the least-privilege secret
 split:
 
-| Workload | Secrets |
-|---|---|
-| api | app keys, REDIS_URL, `lending_app` password |
-| worker | app keys, REDIS_URL, `lending_worker` password (cross-tenant jobs) and `lending_app` password (RLS-enforced tenant-scoped reads) |
-| migrate (Flyway image, own ECR repo) | RDS master (`DATABASE_MIGRATOR_USER/PASSWORD`), `lending_app` and `lending_worker` passwords |
+| Workload                             | Secrets                                                                                                                          |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| api                                  | app keys, REDIS_URL, `lending_app` password                                                                                      |
+| worker                               | app keys, REDIS_URL, `lending_worker` password (cross-tenant jobs) and `lending_app` password (RLS-enforced tenant-scoped reads) |
+| migrate (Flyway image, own ECR repo) | RDS master (`DATABASE_MIGRATOR_USER/PASSWORD`), `lending_app` and `lending_worker` passwords                                     |
 
 `CELL_REGION` and `AWS_REGION` are set to the cell's region. `CELL_ORIGIN_SUFFIX` (`.<api_domain>`), the optional
 `CELL_ORIGINS`, the rate limits (`rate_limits`), `KYC_PROVIDER`, `PAYMENT_PROVIDER`, `CREDIT_BUREAU_PROVIDER` and

@@ -20,13 +20,13 @@ name: infra
 on:
   pull_request:
     paths:
-      - "infra/**"
-      - ".github/workflows/infra.yml"
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
   push:
     branches: [main]
     paths:
-      - "infra/**"
-      - ".github/workflows/infra.yml"
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
 
 # Least privilege by default; the only job that needs more (OIDC) asks
 # for it explicitly.
@@ -39,9 +39,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  TF_VERSION: "1.11.4"
-  TF_IN_AUTOMATION: "true"
-  TF_INPUT: "false"
+  TF_VERSION: '1.11.4'
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
   WORKDIR: infra/terraform
 
 jobs:

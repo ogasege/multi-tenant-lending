@@ -27,8 +27,8 @@
 #
 # Production recommendation: one AWS account per environment under AWS
 # Organizations with SCPs - the account is then the hard boundary and
-# most of the ABAC below becomes defence in depth. This single-account
-# layout is a take-home simplification.
+# most of the ABAC below becomes defence in depth. The single-account
+# layout here is a deliberate simplification of that model.
 
 locals {
   regions = distinct(concat([var.aws_region, var.dr_region], var.cell_regions))

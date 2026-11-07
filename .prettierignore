@@ -5,3 +5,7 @@ infra/terraform/**/.terraform
 docs/api/openapi.json
 package-lock.json
 openapi/openapi.json
+# Playwright output of the white-label client (root prettier does not read
+# the client's own .prettierignore)
+clients/white-label-web/test-results
+clients/white-label-web/playwright-report

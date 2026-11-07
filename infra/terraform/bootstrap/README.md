@@ -7,27 +7,27 @@ that every other state lives in, so it cannot keep its own state there before th
 
 It creates:
 
-* **State bucket** `<project>-tfstate-<account>`: versioned, SSE-KMS with a dedicated CMK and bucket key, Block
+- **State bucket** `<project>-tfstate-<account>`: versioned, SSE-KMS with a dedicated CMK and bucket key, Block
   Public Access, BucketOwnerEnforced, TLS-only, DeleteBucket denied, noncurrent versions expired after 90 days,
   and `prevent_destroy`. Locking uses S3-native `use_lockfile` (no DynamoDB).
-* **GitHub OIDC provider**, plus (all trust policies match the **customised OIDC subject**, see below):
-  * `github-<project>-plan`, trusted only for jobs bound to the **`plan` GitHub Environment** (required reviewers)
+- **GitHub OIDC provider**, plus (all trust policies match the **customised OIDC subject**, see below):
+  - `github-<project>-plan`, trusted only for jobs bound to the **`plan` GitHub Environment** (required reviewers)
     in `infra.yml` on a PR merge ref:
     `repo:<repo>:environment:plan:ref:refs/pull/*/merge:job_workflow_ref:<repo>/.github/workflows/infra.yml@refs/pull/*/merge`.
     It can read **non-prod** state and decrypt it, and nothing else (prod state is explicitly denied). It has no
     secret values and no lock writes; plans run `-refresh=false -lock=false`. Unreviewed PR jobs (fmt, validate,
     test, tflint, checkov) run with **no backend and no AWS credentials**, so a malicious PR cannot reach state.
-  * `github-<project>-apply-<env>`, trusted for exactly
+  - `github-<project>-apply-<env>`, trusted for exactly
     `repo:<repo>:environment:<env>:ref:refs/heads/main:job_workflow_ref:<repo>/.github/workflows/infra.yml@refs/heads/main`:
     the GitHub Environment, the `main` branch and the deploy workflow as it exists on `main`. A PR, another branch
     or another workflow that declares `environment: prod` gets no credentials. Its five customer-managed policies
     are IAM (boundary-enforced) and state, read, compute (EC2 ABAC on the `Environment` tag), data and DNS. Each is
     scoped to its own state key, its own names and secrets, and the allowed regions.
-  * Route 53 **health checks** are managed by the **prod** apply role only. Route 53 has no tag-based
+  - Route 53 **health checks** are managed by the **prod** apply role only. Route 53 has no tag-based
     authorisation and health-check IDs are random, so neither ABAC nor name scoping can confine them to an
     environment; non-prod roles have no health-check Allow and an explicit Deny, and the `global` stack creates
     health checks for the prod tier only (non-prod geolocation records rely on ALB `evaluate_target_health`).
-* **Per-environment permission boundaries** `<project>-boundary-<env>`. Every role an apply role creates must
+- **Per-environment permission boundaries** `<project>-boundary-<env>`. Every role an apply role creates must
   carry its environment's boundary, so workload roles can reach only that environment's queues, objects, secrets,
   keys and logs.
 
@@ -50,10 +50,10 @@ the prod-only health-check rule) becomes defence in depth.
    ```
    The `github_oidc_subject_template` and `github_oidc_subjects` outputs show exactly what the roles expect.
 2. **Environments**
-   * `plan`: required reviewers (enable "Prevent self-review"). Approving it releases a plan of the PR's code with
+   - `plan`: required reviewers (enable "Prevent self-review"). Approving it releases a plan of the PR's code with
      non-prod state access, so review the diff (workflow, providers, data sources) first. No branch restriction
      (PR jobs run on `refs/pull/<n>/merge`).
-   * `dev`, `staging`, `prod`: **deployment branches = selected branches, `main` only** (and no tag rules).
+   - `dev`, `staging`, `prod`: **deployment branches = selected branches, `main` only** (and no tag rules).
      `prod` additionally has required reviewers with "Prevent self-review", and admins should not bypass.
      Each carries `AWS_APPLY_ROLE_ARN`, `TFVARS`, `IMAGE_REFERENCE`, `MIGRATIONS_IMAGE_REFERENCE`.
 3. **Branch protection on `main`** (required reviews, required status checks), since the apply roles trust
