@@ -9,3 +9,7 @@ openapi/openapi.json
 # the client's own .prettierignore)
 clients/white-label-web/test-results
 clients/white-label-web/playwright-report
+
+# Local dot-folders at the root (editor and tool state); CI config is still checked
+/.*/
+!/.github/
