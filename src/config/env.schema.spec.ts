@@ -1,5 +1,5 @@
 import { trustedCellOrigin } from './cell-origins';
-import { parseEnv } from './env.schema';
+import { EXAMPLE_DATA_ENCRYPTION_KEY, parseEnv } from './env.schema';
 
 const base = {
   NODE_ENV: 'development',
@@ -47,6 +47,11 @@ describe('parseEnv', () => {
     ['a LocalStack endpoint', { AWS_ENDPOINT_URL: 'http://localstack:4566' }, /AWS_ENDPOINT_URL/],
     ['placeholder secrets', { JWT_SECRET: `local-only-${'x'.repeat(40)}` }, /JWT_SECRET/],
     ['placeholder DB passwords', { DATABASE_APP_PASSWORD: 'local-only-pw' }, /DATABASE_APP/],
+    [
+      'the public example encryption key',
+      { DATA_ENCRYPTION_KEY: EXAMPLE_DATA_ENCRYPTION_KEY },
+      /public example key/,
+    ],
     [
       'an http cell origin, even loopback',
       { CELL_API_BASE_URL: 'http://localhost:3000' },

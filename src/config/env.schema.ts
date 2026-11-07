@@ -144,6 +144,12 @@ const SECRET_KEYS = [
   'DATABASE_WORKER_PASSWORD',
 ] as const;
 
+/**
+ * The example key published in `.env.example`. It is public, so production must refuse it even
+ * though it has no `local-only` prefix (AES keys must be valid base64 of 32 bytes).
+ */
+export const EXAMPLE_DATA_ENCRYPTION_KEY = 'KxYDvv0jXoo/um4MPAcodSDapq4+tffmMbI0JnYv+YI=';
+
 const fail = (key: string, message: string): never => {
   throw new Error(`Invalid environment configuration:\n  - ${key}: ${message}`);
 };
@@ -180,6 +186,11 @@ function assertProductionSafe(env: ParsedEnv, cellRegion: string, role: ProcessR
   for (const key of SECRET_KEYS) {
     check(!env[key]?.startsWith('local-only'), key, 'is a local placeholder secret');
   }
+  check(
+    env.DATA_ENCRYPTION_KEY !== EXAMPLE_DATA_ENCRYPTION_KEY,
+    'DATA_ENCRYPTION_KEY',
+    'is the public example key from .env.example',
+  );
   check(
     !env.WEBHOOK_ALLOW_PRIVATE_TARGETS,
     'WEBHOOK_ALLOW_PRIVATE_TARGETS',

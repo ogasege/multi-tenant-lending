@@ -1,0 +1,13 @@
+# Known, intentional test values. Both are public on purpose and are refused in production.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Local-only example and test fixtures"
+paths = [
+  '''^\.env\.example$''',      # example key for local Docker; production refuses it (src/config/env.schema.ts)
+  '''^test/fixtures/tls\.ts$''', # self-signed localhost certificate used only by the webhook tests
+]
+regexes = [
+  '''KxYDvv0jXoo/um4MPAcodSDapq4\+tffmMbI0JnYv\+YI=''', # the published example key, refused in production
+]
