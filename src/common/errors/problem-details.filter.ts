@@ -15,7 +15,11 @@ import type { RequestContextStore } from '../context/request-context';
 import { AppError } from './app-error';
 import { ErrorCode } from './error-codes';
 
-export const PROBLEM_TYPE_BASE = 'https://docs.10mg.ai/errors/';
+/**
+ * RFC 9457 `type` for every problem. `about:blank` means the HTTP status says what kind of
+ * problem it is; the stable machine-readable reason is the `code` extension.
+ */
+export const PROBLEM_TYPE = 'about:blank';
 
 interface ProblemDetails {
   type: string;
@@ -114,7 +118,7 @@ function problemFields(
   detail: string,
 ): Pick<ProblemDetails, 'type' | 'title' | 'status' | 'detail' | 'code'> {
   return {
-    type: PROBLEM_TYPE_BASE + code.toLowerCase().replaceAll('_', '-'),
+    type: PROBLEM_TYPE,
     title: STATUS_CODES[status] ?? 'Error',
     status,
     detail,

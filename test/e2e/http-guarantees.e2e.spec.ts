@@ -198,7 +198,7 @@ describe('HTTP guarantees (auth, idempotency, validation, errors)', () => {
       const failed = await charge({ amount: 13 }, key).expect(422);
       expect(failed.body).toMatchObject({
         code: 'REPAYMENT_EXCEEDS_PAYOFF',
-        type: 'https://docs.10mg.ai/errors/repayment-exceeds-payoff',
+        type: 'about:blank',
       });
       // Same key, same body: re-executed (not replayed), because failures are not stored.
       const retry = await charge({ amount: 13 }, key).expect(422);

@@ -231,7 +231,7 @@ describe('database guarantees (RLS, ledger, audit)', () => {
       await inTenant(app, null, async () => {
         await app.query("SELECT set_config('app.platform_auth', 'on', true)");
         await app.query(
-          `INSERT INTO platform_admins (email, password_hash, full_name) VALUES ('ops@10mg.ai', 'hash', 'Ops')`,
+          `INSERT INTO platform_admins (email, password_hash, full_name) VALUES ('ops@platform.example', 'hash', 'Ops')`,
         );
       });
       expect(await inTenant(app, tenantA, () => countRows(app, 'platform_admins'))).toBe(0);

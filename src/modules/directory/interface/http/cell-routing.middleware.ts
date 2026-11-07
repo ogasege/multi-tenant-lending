@@ -7,7 +7,7 @@ import { ClsService } from 'nestjs-cls';
 import type { RequestContextStore } from '../../../../common/context/request-context';
 import { TransactionRunner } from '../../../../common/database/transaction-runner';
 import { ErrorCode } from '../../../../common/errors/error-codes';
-import { PROBLEM_TYPE_BASE } from '../../../../common/errors/problem-details.filter';
+import { PROBLEM_TYPE } from '../../../../common/errors/problem-details.filter';
 import { clientKey } from '../../../../common/rate-limit/client-key';
 import {
   RateLimitedError,
@@ -122,7 +122,6 @@ export class CellRoutingMiddleware implements NestMiddleware {
       ErrorCode.WRONG_CELL,
       `This institution is served by the ${decision.homeRegion} cell`,
       { homeRegion: decision.homeRegion, apiBaseUrl: decision.apiBaseUrl },
-      'wrong-cell',
     );
     return true;
   }
@@ -134,14 +133,13 @@ export class CellRoutingMiddleware implements NestMiddleware {
     code: ErrorCode,
     detail: string,
     extensions: Record<string, unknown>,
-    type = code.toLowerCase().replaceAll('_', '-'),
   ): void {
     res
       .status(status)
       .type('application/problem+json')
       .json({
         ...extensions,
-        type: PROBLEM_TYPE_BASE + type,
+        type: PROBLEM_TYPE,
         title: STATUS_CODES[status],
         status,
         detail,
